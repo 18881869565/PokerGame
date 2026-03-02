@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir /s /b *.csproj)",
+      "Bash(dir /s /b package.json)",
+      "Bash(dir /s /b *.md)",
+      "Bash(find . -maxdepth 3 -type f \\\\\\(-name *.csproj -o -name *.sln -o -name *.md -o -name package.json \\\\\\))",
+      "WebSearch",
+      "Bash(python:*)",
+      "Bash(where pip:*)",
+      "Bash(powershell:*)",
+      "Bash(export:*)",
+      "Bash(cmd.exe:*)",
+      "Bash(\"C:/Users/lym/AppData/Local/Python/pythoncore-3.14-64/Scripts/pip.bat\":*)",
+      "Bash(\"/c/Users/lym/AppData/Local/Python/pythoncore-3.14-64/Scripts/pip\":*)",
+      "Bash(do:*)",
+      "Bash(command:*)",
+      "Bash(\"/c/Users/lym/AppData/Local/Python/pythoncore-3.14-64/Scripts/pip3\":*)",
+      "Bash(unzip:*)",
+      "Bash(dotnet restore:*)",
+      "Bash(dotnet build:*)",
+      "Bash(npm install:*)",
+      "Bash(npm run:*)"
+    ]
+  }
+}
