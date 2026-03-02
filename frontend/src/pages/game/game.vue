@@ -1,241 +1,485 @@
 <template>
-  <view class="game-container">
-    <!-- 游戏桌面 -->
-    <view class="poker-table">
-      <!-- 公共牌区域 -->
-      <view class="community-cards">
-        <view class="card" v-for="(card, index) in gameStore.communityCards" :key="index">
-          <text class="card-value">{{ getCardDisplay(card) }}</text>
-        </view>
-        <view class="card placeholder" v-for="i in (5 - gameStore.communityCards.length)" :key="'p' + i">
-          <text class="card-value">?</text>
+  <view class="game-page">
+    <!-- 游戏阶段指示器 -->
+    <view class="phase-indicator">
+      <text class="phase-text">{{ gameStore.phaseText }}</text>
+      <text class="pot-text">底池: {{ formatChips(gameStore.pot) }}</text>
+    </view>
+
+    <!-- 牌桌区域 -->
+    <view class="table-area">
+      <!-- 椭圆形牌桌 -->
+      <view class="poker-table">
+        <!-- 公共牌 -->
+        <view class="community-cards">
+          <PokerCard
+            v-for="(card, index) in gameStore.communityCards"
+            :key="'c' + index"
+            :suit="card.suit"
+            :rank="card.rank"
+            size="medium"
+          />
+          <!-- 占位牌 -->
+          <view
+            v-for="i in (5 - gameStore.communityCards.length)"
+            :key="'p' + i"
+            class="card-placeholder"
+          >
+            <PokerCard :suit="0" :rank="2" :face-down="true" size="medium" />
+          </view>
         </view>
       </view>
 
-      <!-- 底池 -->
-      <view class="pot">
-        <text>底池: {{ gameStore.pot }}</text>
+      <!-- 玩家座位（9人固定布局） -->
+      <PlayerSeat
+        v-for="seatIndex in 9"
+        :key="'seat' + seatIndex"
+        :seat-index="seatIndex - 1"
+        :player="getPlayerAtSeat(seatIndex - 1)"
+        :is-active="isPlayerActive(seatIndex - 1)"
+      />
+    </view>
+
+    <!-- 我的手牌区域 -->
+    <view class="my-cards-area">
+      <text class="my-cards-label">我的手牌</text>
+      <view class="my-cards">
+        <PokerCard
+          v-for="(card, index) in myHoleCards"
+          :key="'h' + index"
+          :suit="card.suit"
+          :rank="card.rank"
+          size="large"
+        />
+        <!-- 没有牌时显示占位 -->
+        <template v-if="myHoleCards.length === 0">
+          <view class="card-placeholder-large">
+            <text>?</text>
+          </view>
+          <view class="card-placeholder-large">
+            <text>?</text>
+          </view>
+        </template>
       </view>
     </view>
 
-    <!-- 玩家座位 (简化版，围绕桌子排列) -->
-    <view class="players-area">
-      <view
-        class="player-seat"
-        v-for="player in gameStore.players"
-        :key="player.userId"
-        :class="{ active: player.userId === gameStore.currentPlayerId, folded: player.status === 2 }"
-      >
-        <text class="player-name">{{ player.seatIndex }}号位</text>
-        <text class="player-chips">{{ player.chips }}</text>
-        <text class="player-bet" v-if="player.currentBet > 0">下注: {{ player.currentBet }}</text>
-      </view>
-    </view>
+    <!-- 操作按钮栏 -->
+    <ActionBar
+      :is-my-turn="gameStore.isMyTurn"
+      :can-check="gameStore.canCheck"
+      :current-highest-bet="gameStore.currentHighestBet"
+      :my-current-bet="gameStore.myCurrentBet"
+      :my-chips="gameStore.myChips"
+      :big-blind="gameStore.bigBlind"
+      :pot="gameStore.pot"
+      @fold="onFold"
+      @check="onCheck"
+      @call="onCall"
+      @raise="onRaise"
+      @all-in="onAllIn"
+    />
 
-    <!-- 我的手牌 -->
-    <view class="my-cards">
-      <text class="label">我的手牌</text>
-      <view class="cards-row">
-        <view class="card my-card" v-for="(card, index) in gameStore.myCards" :key="index">
-          <text class="card-value">{{ getCardDisplay(card) }}</text>
+    <!-- 游戏结束弹窗 -->
+    <view v-if="showResultModal" class="result-modal">
+      <view class="result-content">
+        <text class="result-title">🎉 游戏结束</text>
+
+        <!-- 获胜者 -->
+        <view class="winners">
+          <text class="winners-label">获胜者:</text>
+          <text v-for="winnerId in gameStore.gameResult?.winnerIds" :key="winnerId" class="winner-name">
+            {{ getPlayerName(winnerId) }}
+          </text>
         </view>
+
+        <!-- 底池 -->
+        <text class="result-pot">赢得底池: {{ formatChips(gameStore.gameResult?.pot || 0) }}</text>
+
+        <!-- 所有玩家手牌 -->
+        <view class="all-hands">
+          <view
+            v-for="hand in gameStore.gameResult?.playerHands"
+            :key="hand.userId"
+            class="player-hand"
+          >
+            <text class="hand-player-name">{{ hand.nickname }}</text>
+            <view class="hand-cards">
+              <PokerCard
+                v-for="(card, idx) in hand.holeCards"
+                :key="idx"
+                :suit="card.suit"
+                :rank="card.rank"
+                size="small"
+              />
+            </view>
+            <text v-if="hand.handDescription" class="hand-desc">{{ hand.handDescription }}</text>
+            <text v-if="hand.chipsWon > 0" class="chips-won">+{{ hand.chipsWon }}</text>
+          </view>
+        </view>
+
+        <button class="close-btn" @click="closeResultModal">继续游戏</button>
       </view>
     </view>
 
-    <!-- 操作按钮 -->
-    <view class="action-bar" v-if="isMyTurn">
-      <button class="action-btn fold" @click="doFold">弃牌</button>
-      <button class="action-btn check" @click="doCheck" v-if="canCheck">过牌</button>
-      <button class="action-btn call" @click="doCall">跟注</button>
-      <button class="action-btn raise" @click="showRaiseSlider = true">加注</button>
-      <button class="action-btn allin" @click="doAllIn">全押</button>
+    <!-- 加载中 -->
+    <view v-if="loading" class="loading-mask">
+      <text class="loading-text">加载中...</text>
     </view>
   </view>
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { useGameStore } from '@/stores/game'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { onLoad, onUnload } from '@dcloudio/uni-app'
+import { useGameStore, GamePhase } from '@/stores/game'
 import { useUserStore } from '@/stores/user'
 import { useSignalR } from '@/composables/useSignalR'
+import PokerCard from '@/components/PokerCard.vue'
+import PlayerSeat from '@/components/PlayerSeat.vue'
+import ActionBar from '@/components/ActionBar.vue'
 
 const gameStore = useGameStore()
 const userStore = useUserStore()
-const { fold, check, bet, allIn } = useSignalR()
+const {
+  isConnected,
+  connect,
+  disconnect,
+  joinRoom,
+  leaveRoom,
+  fold,
+  check,
+  bet,
+  raise,
+  allIn
+} = useSignalR()
 
-const isMyTurn = computed(() => gameStore.currentPlayerId === userStore.userInfo?.id)
-const canCheck = computed(() => true) // TODO: 根据当前下注情况判断
-const showRaiseSlider = ref(false)
+const loading = ref(true)
+const roomCode = ref('')
 
-const getCardDisplay = (card: { suit: number; rank: number }) => {
-  const suits = ['♠', '♥', '♣', '♦']
-  const ranks = ['', '', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
-  return `${suits[card.suit]}${ranks[card.rank]}`
+// 我的手牌
+const myHoleCards = computed(() => {
+  const me = gameStore.players.find(p => p.userId === gameStore.myUserId)
+  return me?.holeCards || []
+})
+
+// 显示结果弹窗
+const showResultModal = computed(() =>
+  gameStore.phase === GamePhase.Finished && gameStore.gameResult !== null
+)
+
+// 获取指定座位的玩家
+const getPlayerAtSeat = (seatIndex: number) => {
+  return gameStore.players.find(p => p.seatIndex === seatIndex)
 }
 
-const doFold = async () => {
-  await fold(gameStore.roomCode || '')
+// 判断玩家是否是当前操作者
+const isPlayerActive = (seatIndex: number) => {
+  const player = getPlayerAtSeat(seatIndex)
+  return player?.userId === gameStore.currentPlayerId
 }
 
-const doCheck = async () => {
-  await check(gameStore.roomCode || '')
+// 获取玩家名称
+const getPlayerName = (userId: number) => {
+  const player = gameStore.players.find(p => p.userId === userId)
+  return player?.nickname || '玩家'
 }
 
-const doCall = async () => {
-  // TODO: 计算跟注金额
-  await bet(gameStore.roomCode || '', 0)
+// 格式化筹码
+const formatChips = (chips: number): string => {
+  if (chips >= 10000) {
+    return (chips / 10000).toFixed(1) + '万'
+  }
+  return chips.toString()
 }
 
-const doAllIn = async () => {
-  await allIn(gameStore.roomCode || '')
+// 操作处理
+const onFold = () => {
+  if (roomCode.value) fold(roomCode.value)
 }
+
+const onCheck = () => {
+  if (roomCode.value) check(roomCode.value)
+}
+
+const onCall = () => {
+  if (roomCode.value) bet(roomCode.value, gameStore.callAmount)
+}
+
+const onRaise = (amount: number) => {
+  if (roomCode.value) raise(roomCode.value, amount)
+}
+
+const onAllIn = () => {
+  if (roomCode.value) allIn(roomCode.value)
+}
+
+// 关闭结果弹窗
+const closeResultModal = () => {
+  gameStore.clearGameResult()
+}
+
+// 页面加载
+onLoad(async (options) => {
+  roomCode.value = options.roomCode || ''
+
+  // 设置用户ID
+  if (userStore.userInfo?.id) {
+    gameStore.setMyUserId(userStore.userInfo.id)
+  }
+
+  // 连接 SignalR 并加入房间
+  if (roomCode.value) {
+    gameStore.setRoom(roomCode.value, 0)
+    await connect()
+    await joinRoom(roomCode.value)
+  }
+
+  loading.value = false
+})
+
+// 页面卸载
+onUnload(() => {
+  if (roomCode.value) {
+    leaveRoom(roomCode.value)
+  }
+  gameStore.reset()
+})
 </script>
 
 <style scoped>
-.game-container {
+.game-page {
   min-height: 100vh;
-  background: #0f3460;
+  background: linear-gradient(180deg, #1a1a2e 0%, #16213e 100%);
   position: relative;
+  overflow: hidden;
 }
 
-.poker-table {
-  width: 90%;
-  margin: 40rpx auto;
-  aspect-ratio: 2;
-  background: #1a6b3c;
-  border-radius: 50%;
-  border: 10rpx solid #8b4513;
+/* 阶段指示器 */
+.phase-indicator {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 20rpx 30rpx;
+  background: rgba(0, 0, 0, 0.5);
   display: flex;
-  flex-direction: column;
+  justify-content: space-between;
   align-items: center;
-  justify-content: center;
+  z-index: 50;
 }
 
-.community-cards {
-  display: flex;
-  gap: 10rpx;
-}
-
-.card {
-  width: 60rpx;
-  height: 84rpx;
-  background: #ffffff;
-  border-radius: 8rpx;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.card.placeholder {
-  background: rgba(255, 255, 255, 0.3);
-}
-
-.card-value {
-  font-size: 24rpx;
-  color: #333333;
-  font-weight: bold;
-}
-
-.pot {
-  margin-top: 20rpx;
+.phase-text {
   color: #ffd700;
   font-size: 28rpx;
   font-weight: bold;
 }
 
-.players-area {
+.pot-text {
+  color: #ffffff;
+  font-size: 26rpx;
+}
+
+/* 牌桌区域 */
+.table-area {
+  position: relative;
+  margin-top: 100rpx;
+  height: 750rpx;
+}
+
+/* 椭圆形牌桌 */
+.poker-table {
   position: absolute;
-  top: 50%;
+  top: 50rpx;
   left: 50%;
-  transform: translate(-50%, -50%);
-  width: 100%;
-  height: 100%;
+  transform: translateX(-50%);
+  width: 650rpx;
+  height: 400rpx;
+  background: linear-gradient(135deg, #2d5016 0%, #1a6b3c 50%, #2d5016 100%);
+  border-radius: 200rpx;
+  border: 16rpx solid #5c3d2e;
+  box-shadow:
+    inset 0 0 30rpx rgba(0, 0, 0, 0.3),
+    0 10rpx 30rpx rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.player-seat {
-  position: absolute;
-  background: rgba(0, 0, 0, 0.5);
-  padding: 10rpx 20rpx;
-  border-radius: 10rpx;
-  text-align: center;
+/* 公共牌 */
+.community-cards {
+  display: flex;
+  gap: 12rpx;
+  padding: 20rpx;
 }
 
-.player-seat.active {
-  border: 2rpx solid #ffd700;
-}
-
-.player-seat.folded {
+.card-placeholder {
   opacity: 0.5;
 }
 
-.player-name {
+/* 我的手牌区域 */
+.my-cards-area {
+  position: fixed;
+  bottom: 180rpx;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  z-index: 60;
+}
+
+.my-cards-label {
+  color: rgba(255, 255, 255, 0.6);
   font-size: 24rpx;
-  color: #ffffff;
-  display: block;
-}
-
-.player-chips {
-  font-size: 20rpx;
-  color: #ffd700;
-}
-
-.player-bet {
-  font-size: 18rpx;
-  color: #e94560;
+  margin-bottom: 12rpx;
 }
 
 .my-cards {
-  position: fixed;
-  bottom: 200rpx;
-  left: 50%;
-  transform: translateX(-50%);
-  text-align: center;
-}
-
-.label {
-  font-size: 24rpx;
-  color: #999999;
-  display: block;
-  margin-bottom: 10rpx;
-}
-
-.cards-row {
   display: flex;
   gap: 20rpx;
 }
 
-.my-card {
-  width: 80rpx;
-  height: 112rpx;
+.card-placeholder-large {
+  width: 100rpx;
+  height: 140rpx;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 8rpx;
+  border: 2rpx dashed rgba(255, 255, 255, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.my-card .card-value {
-  font-size: 32rpx;
+.card-placeholder-large text {
+  color: rgba(255, 255, 255, 0.3);
+  font-size: 40rpx;
 }
 
-.action-bar {
+/* 游戏结果弹窗 */
+.result-modal {
   position: fixed;
-  bottom: 40rpx;
+  top: 0;
   left: 0;
   right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.8);
   display: flex;
+  align-items: center;
   justify-content: center;
-  gap: 20rpx;
-  padding: 0 40rpx;
+  z-index: 200;
 }
 
-.action-btn {
-  padding: 20rpx 30rpx;
-  border-radius: 10rpx;
-  font-size: 28rpx;
+.result-content {
+  width: 600rpx;
+  background: #ffffff;
+  border-radius: 20rpx;
+  padding: 40rpx;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.result-title {
+  display: block;
+  text-align: center;
+  font-size: 36rpx;
   font-weight: bold;
+  color: #333333;
+  margin-bottom: 30rpx;
+}
+
+.winners {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16rpx;
+  margin-bottom: 20rpx;
+}
+
+.winners-label {
+  font-size: 28rpx;
+  color: #666666;
+}
+
+.winner-name {
+  font-size: 32rpx;
+  font-weight: bold;
+  color: #e74c3c;
+}
+
+.result-pot {
+  display: block;
+  text-align: center;
+  font-size: 28rpx;
+  color: #f39c12;
+  margin-bottom: 30rpx;
+}
+
+.all-hands {
+  margin-bottom: 30rpx;
+}
+
+.player-hand {
+  display: flex;
+  align-items: center;
+  padding: 16rpx 0;
+  border-bottom: 1rpx solid #eeeeee;
+}
+
+.hand-player-name {
+  width: 120rpx;
+  font-size: 24rpx;
+  color: #333333;
+}
+
+.hand-cards {
+  display: flex;
+  gap: 8rpx;
+  margin: 0 20rpx;
+}
+
+.hand-desc {
+  flex: 1;
+  font-size: 22rpx;
+  color: #666666;
+}
+
+.chips-won {
+  font-size: 26rpx;
+  font-weight: bold;
+  color: #27ae60;
+}
+
+.close-btn {
+  width: 100%;
+  padding: 24rpx 0;
+  background: #27ae60;
   color: #ffffff;
+  font-size: 30rpx;
+  font-weight: bold;
+  border-radius: 12rpx;
   border: none;
 }
 
-.action-btn.fold { background: #666666; }
-.action-btn.check { background: #4a69bd; }
-.action-btn.call { background: #27ae60; }
-.action-btn.raise { background: #f39c12; }
-.action-btn.allin { background: #e94560; }
+.close-btn::after {
+  border: none;
+}
+
+/* 加载中 */
+.loading-mask {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 300;
+}
+
+.loading-text {
+  color: #ffffff;
+  font-size: 32rpx;
+}
 </style>
