@@ -42,6 +42,7 @@ export interface GamePlayer {
   isDealer: boolean
   isSmallBlind: boolean
   isBigBlind: boolean
+  isOnline?: boolean  // 是否在线，默认 true
   holeCards?: Card[]  // 只有自己的牌可见
 }
 
@@ -56,6 +57,7 @@ export interface GameStateDto {
   dealerId: number
   smallBlind: number
   bigBlind: number
+  hasAllInPlayer: boolean  // 是否有玩家已全押
 }
 
 // 游戏结果接口
@@ -85,6 +87,7 @@ export const useGameStore = defineStore('game', () => {
   const bigBlind = ref<number>(20)
   const currentHighestBet = ref<number>(0)
   const myUserId = ref<number>(0)
+  const hasAllInPlayer = ref<boolean>(false)  // 是否有玩家已全押
 
   // 游戏结果
   const gameResult = ref<GameResultDto | null>(null)
@@ -158,13 +161,18 @@ export const useGameStore = defineStore('game', () => {
   const updateFromServer = (data: GameStateDto) => {
     phase.value = data.phase
     communityCards.value = data.communityCards || []
-    players.value = data.players || []
+    // 游戏中的玩家默认视为在线（后端不返回 isOnline，但能收到游戏状态说明在线）
+    players.value = (data.players || []).map(p => ({
+      ...p,
+      isOnline: p.isOnline !== false // 默认 true，除非明确设为 false
+    }))
     pot.value = data.pot
     currentHighestBet.value = data.currentHighestBet
     currentPlayerId.value = data.currentPlayerId
     dealerId.value = data.dealerId
     smallBlind.value = data.smallBlind
     bigBlind.value = data.bigBlind
+    hasAllInPlayer.value = data.hasAllInPlayer || false
   }
 
   // 设置游戏结果
@@ -208,6 +216,7 @@ export const useGameStore = defineStore('game', () => {
     bigBlind,
     currentHighestBet,
     myUserId,
+    hasAllInPlayer,
     gameResult,
 
     // 计算属性

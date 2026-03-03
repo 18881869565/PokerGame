@@ -32,8 +32,8 @@
         />
       </view>
 
-      <button class="btn btn-primary" @click="submit">
-        {{ isRegister ? '注册' : '登录' }}
+      <button class="btn btn-primary" @click="submit" :disabled="loading">
+        {{ loading ? '处理中...' : (isRegister ? '注册' : '登录') }}
       </button>
 
       <view class="switch-mode" @click="toggleMode">
@@ -46,10 +46,12 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useUserStore } from '@/stores/user'
+import { authApi } from '@/api'
 
 const userStore = useUserStore()
 
 const isRegister = ref(false)
+const loading = ref(false)
 const form = ref({
   username: '',
   password: '',
@@ -66,26 +68,50 @@ const submit = async () => {
     return
   }
 
+  loading.value = true
+
   try {
     if (isRegister.value) {
-      // TODO: 调用注册 API
-      uni.showToast({ title: '注册成功', icon: 'success' })
-    } else {
-      // TODO: 调用登录 API
-      userStore.setToken('mock_token')
-      userStore.setUser({
-        id: 1,
+      // 注册
+      const regRes = await authApi.register({
         username: form.value.username,
-        nickname: form.value.nickname || form.value.username,
-        chips: 10000
+        password: form.value.password,
+        nickname: form.value.nickname || form.value.username
       })
-      uni.showToast({ title: '登录成功', icon: 'success' })
-      setTimeout(() => {
-        uni.switchTab({ url: '/pages/index/index' })
-      }, 1500)
+      if (regRes.success) {
+        uni.showToast({ title: '注册成功，请登录', icon: 'success' })
+        isRegister.value = false
+      } else {
+        uni.showToast({ title: regRes.message || '注册失败', icon: 'none' })
+      }
+    } else {
+      // 登录
+      const loginRes = await authApi.login({
+        username: form.value.username,
+        password: form.value.password
+      })
+      if (loginRes.success && loginRes.data) {
+        const { token, user } = loginRes.data as any
+        userStore.setToken(token)
+        userStore.setUser({
+          id: user.id,
+          username: user.username,
+          nickname: user.nickname || user.username,
+          chips: user.chips || 10000,
+          avatar: user.avatar
+        })
+        uni.showToast({ title: '登录成功', icon: 'success' })
+        setTimeout(() => {
+          uni.switchTab({ url: '/pages/index/index' })
+        }, 1000)
+      } else {
+        uni.showToast({ title: loginRes.message || '登录失败', icon: 'none' })
+      }
     }
-  } catch (error) {
-    uni.showToast({ title: '操作失败', icon: 'none' })
+  } catch (error: any) {
+    uni.showToast({ title: error.message || '操作失败', icon: 'none' })
+  } finally {
+    loading.value = false
   }
 }
 </script>

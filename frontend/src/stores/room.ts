@@ -9,6 +9,7 @@ interface Player {
   chips: number
   isReady: boolean
   isOnline: boolean
+  isOwner?: boolean
 }
 
 export const useRoomStore = defineStore('room', () => {
@@ -20,6 +21,8 @@ export const useRoomStore = defineStore('room', () => {
   const bigBlind = ref<number>(20)
   const status = ref<number>(0)
   const players = ref<Player[]>([])
+  const wasRemoved = ref<boolean>(false)  // 是否被踢出房间（筹码不足）
+  const removeReason = ref<string>('')    // 被踢出的原因
 
   const setRoom = (room: {
     roomCode: string
@@ -43,6 +46,10 @@ export const useRoomStore = defineStore('room', () => {
     players.value = playerList
   }
 
+  const updatePlayers = (playerList: Player[]) => {
+    players.value = playerList
+  }
+
   const addPlayer = (player: Player) => {
     players.value.push(player)
   }
@@ -51,11 +58,23 @@ export const useRoomStore = defineStore('room', () => {
     players.value = players.value.filter(p => p.userId !== userId)
   }
 
+  const setRemoved = (reason: string) => {
+    wasRemoved.value = true
+    removeReason.value = reason
+  }
+
+  const clearRemoved = () => {
+    wasRemoved.value = false
+    removeReason.value = ''
+  }
+
   const clear = () => {
     roomCode.value = ''
     roomId.value = 0
     ownerId.value = 0
     players.value = []
+    wasRemoved.value = false
+    removeReason.value = ''
   }
 
   return {
@@ -67,10 +86,15 @@ export const useRoomStore = defineStore('room', () => {
     bigBlind,
     status,
     players,
+    wasRemoved,
+    removeReason,
     setRoom,
     setPlayers,
+    updatePlayers,
     addPlayer,
     removePlayer,
+    setRemoved,
+    clearRemoved,
     clear
   }
 })

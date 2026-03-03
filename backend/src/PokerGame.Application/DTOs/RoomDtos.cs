@@ -121,6 +121,11 @@ public class CreateRoomDto
     /// 大盲注
     /// </summary>
     public int BigBlind { get; set; } = 20;
+
+    /// <summary>
+    /// 带入筹码（0表示默认）
+    /// </summary>
+    public long BringChips { get; set; } = 0;
 }
 
 /// <summary>

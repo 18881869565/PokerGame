@@ -1,15 +1,23 @@
 <template>
   <view class="game-page">
-    <!-- 游戏阶段指示器 -->
-    <view class="phase-indicator">
+    <!-- 顶部导航栏 -->
+    <view class="top-bar">
+      <view class="back-btn" @click="handleBack">
+        <Icon name="back" :size="36" color="#ffffff" />
+      </view>
       <text class="phase-text">{{ gameStore.phaseText }}</text>
-      <text class="pot-text">底池: {{ formatChips(gameStore.pot) }}</text>
+      <view class="placeholder"></view>
     </view>
 
     <!-- 牌桌区域 -->
     <view class="table-area">
       <!-- 椭圆形牌桌 -->
       <view class="poker-table">
+        <!-- 底池显示 -->
+        <view class="pot-area">
+          <PotDisplay :pot="gameStore.pot" />
+        </view>
+
         <!-- 公共牌 -->
         <view class="community-cards">
           <PokerCard
@@ -72,6 +80,7 @@
       :my-chips="gameStore.myChips"
       :big-blind="gameStore.bigBlind"
       :pot="gameStore.pot"
+      :has-all-in-player="gameStore.hasAllInPlayer"
       @fold="onFold"
       @check="onCheck"
       @call="onCall"
@@ -129,28 +138,32 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onUnmounted } from 'vue'
 import { onLoad, onUnload } from '@dcloudio/uni-app'
 import { useGameStore, GamePhase } from '@/stores/game'
 import { useUserStore } from '@/stores/user'
+import { useRoomStore } from '@/stores/room'
 import { useSignalR } from '@/composables/useSignalR'
 import PokerCard from '@/components/PokerCard.vue'
 import PlayerSeat from '@/components/PlayerSeat.vue'
 import ActionBar from '@/components/ActionBar.vue'
+import PotDisplay from '@/components/PotDisplay.vue'
+import Icon from '@/components/Icon.vue'
 
 const gameStore = useGameStore()
 const userStore = useUserStore()
+const roomStore = useRoomStore()
 const {
   isConnected,
   connect,
-  disconnect,
   joinRoom,
   leaveRoom,
   fold,
   check,
   bet,
   raise,
-  allIn
+  allIn,
+  connection
 } = useSignalR()
 
 const loading = ref(true)
@@ -213,14 +226,73 @@ const onAllIn = () => {
   if (roomCode.value) allIn(roomCode.value)
 }
 
-// 关闭结果弹窗
-const closeResultModal = () => {
+// 处理返回按钮点击
+const handleBack = () => {
+  const isInGame = gameStore.phase !== GamePhase.Waiting &&
+                   gameStore.phase !== GamePhase.Finished
+
+  const message = isInGame
+    ? '正在游戏中，离开将视为弃牌，确定要离开吗？'
+    : '确定要离开游戏返回房间吗？'
+
+  uni.showModal({
+    title: '离开游戏',
+    content: message,
+    confirmText: '确定离开',
+    cancelText: '取消',
+    success: async (res) => {
+      if (res.confirm) {
+        // 如果正在游戏中，先弃牌
+        if (isInGame && gameStore.isMyTurn) {
+          onFold()
+        } else if (isInGame && roomCode.value) {
+          // 即使不是自己回合也要弃牌
+          fold(roomCode.value)
+        }
+
+        // 等待一下让弃牌操作完成
+        await new Promise(resolve => setTimeout(resolve, 300))
+
+        // 标记正在返回，避免 onUnload 时的额外处理
+        isNavigatingBack.value = true
+
+        // 返回房间页面
+        uni.navigateBack()
+      }
+    }
+  })
+}
+
+// 关闭结果弹窗，返回房间准备下一局
+const closeResultModal = async () => {
   gameStore.clearGameResult()
+  // 更新用户信息（刷新服务器余额）
+  await userStore.fetchUserInfo()
+
+  // 检查是否被踢出房间（筹码不足）
+  if (roomStore.wasRemoved) {
+    const reason = roomStore.removeReason || '筹码不足，已自动离开房间'
+    roomStore.clear()
+    uni.showModal({
+      title: '已离开房间',
+      content: reason,
+      showCancel: false,
+      success: () => {
+        uni.switchTab({ url: '/pages/lobby/lobby' })
+      }
+    })
+    return
+  }
+
+  // 返回房间页面
+  uni.navigateBack()
 }
 
 // 页面加载
 onLoad(async (options) => {
-  roomCode.value = options.roomCode || ''
+  console.log('[Game] onLoad options:', options)
+  roomCode.value = options?.roomCode || uni.getStorageSync('currentRoomCode') || ''
+  console.log('[Game] roomCode:', roomCode.value)
 
   // 设置用户ID
   if (userStore.userInfo?.id) {
@@ -230,18 +302,40 @@ onLoad(async (options) => {
   // 连接 SignalR 并加入房间
   if (roomCode.value) {
     gameStore.setRoom(roomCode.value, 0)
-    await connect()
-    await joinRoom(roomCode.value)
+
+    try {
+      // 连接 SignalR（如果是已连接状态会复用现有连接）
+      await connect()
+      // 加入房间获取最新游戏状态
+      await joinRoom(roomCode.value)
+      console.log('[Game] SignalR connected and joined room')
+    } catch (e: any) {
+      console.error('[Game] SignalR connection error:', e)
+      uni.showToast({ title: e.message || '连接失败', icon: 'none' })
+    }
   }
 
   loading.value = false
 })
 
-// 页面卸载
+// 是否正在返回房间（此时不应该离开房间）
+const isNavigatingBack = ref(false)
+
+// 页面卸载 - 玩家可能返回房间，不离开房间
 onUnload(() => {
-  if (roomCode.value) {
-    leaveRoom(roomCode.value)
+  // 只有当明确要离开时才调用 leaveRoom
+  // 正常情况下游戏结束后返回房间，不需要离开
+  if (isNavigatingBack.value) {
+    // 返回房间，保持 SignalR 连接
+    return
   }
+
+  // 其他情况（如用户手动返回），也不离开房间
+  // SignalR 连接保持（全局单例）
+  gameStore.reset()
+})
+
+onUnmounted(() => {
   gameStore.reset()
 })
 </script>
@@ -252,6 +346,45 @@ onUnload(() => {
   background: linear-gradient(180deg, #1a1a2e 0%, #16213e 100%);
   position: relative;
   overflow: hidden;
+}
+
+/* 顶部导航栏 */
+.top-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 88rpx;
+  padding: 0 30rpx;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  z-index: 100;
+}
+
+.back-btn {
+  width: 64rpx;
+  height: 64rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.back-btn:active {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.phase-text {
+  color: #ffd700;
+  font-size: 28rpx;
+  font-weight: bold;
+}
+
+.placeholder {
+  width: 64rpx;
 }
 
 /* 阶段指示器 */
@@ -274,35 +407,36 @@ onUnload(() => {
   font-weight: bold;
 }
 
-.pot-text {
-  color: #ffffff;
-  font-size: 26rpx;
-}
-
 /* 牌桌区域 */
 .table-area {
   position: relative;
-  margin-top: 100rpx;
-  height: 750rpx;
+  margin-top: 80rpx;
+  height: 620rpx;
 }
 
 /* 椭圆形牌桌 */
 .poker-table {
   position: absolute;
-  top: 50rpx;
+  top: 40rpx;
   left: 50%;
   transform: translateX(-50%);
-  width: 650rpx;
-  height: 400rpx;
+  width: 580rpx;
+  height: 320rpx;
   background: linear-gradient(135deg, #2d5016 0%, #1a6b3c 50%, #2d5016 100%);
-  border-radius: 200rpx;
-  border: 16rpx solid #5c3d2e;
+  border-radius: 160rpx;
+  border: 12rpx solid #5c3d2e;
   box-shadow:
-    inset 0 0 30rpx rgba(0, 0, 0, 0.3),
-    0 10rpx 30rpx rgba(0, 0, 0, 0.5);
+    inset 0 0 20rpx rgba(0, 0, 0, 0.3),
+    0 8rpx 20rpx rgba(0, 0, 0, 0.5);
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+}
+
+/* 底池区域 */
+.pot-area {
+  margin-bottom: 20rpx;
 }
 
 /* 公共牌 */

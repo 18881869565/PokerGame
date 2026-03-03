@@ -52,6 +52,11 @@ public class GameStateDto
     /// 大盲注
     /// </summary>
     public int BigBlind { get; set; }
+
+    /// <summary>
+    /// 是否有玩家已全押（其他玩家只能全押或弃牌）
+    /// </summary>
+    public bool HasAllInPlayer { get; set; }
 }
 
 /// <summary>
@@ -69,6 +74,7 @@ public class GamePlayerDto
     public bool IsDealer { get; set; }
     public bool IsSmallBlind { get; set; }
     public bool IsBigBlind { get; set; }
+    public bool IsOnline { get; set; } = true; // 游戏中的玩家默认在线
     public List<CardDto>? HoleCards { get; set; } // 仅自己的牌可见
 }
 

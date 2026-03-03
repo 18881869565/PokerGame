@@ -5,33 +5,43 @@
       弃牌
     </button>
 
-    <button
-      class="action-btn check"
-      :disabled="!isMyTurn || !canCheck"
-      @click="handleCheck"
-    >
-      过牌
-    </button>
+    <!-- 全押模式：只能全押或弃牌 -->
+    <template v-if="isAllInMode">
+      <button class="action-btn allin" :disabled="!isMyTurn" @click="handleAllIn">
+        全押 {{ myChips > 0 ? myChips : '' }}
+      </button>
+    </template>
 
-    <button
-      class="action-btn call"
-      :disabled="!isMyTurn || canCheck"
-      @click="handleCall"
-    >
-      跟注 {{ callAmount > 0 ? callAmount : '' }}
-    </button>
+    <!-- 正常模式：所有操作都可用 -->
+    <template v-else>
+      <button
+        class="action-btn check"
+        :disabled="!isMyTurn || !canCheck"
+        @click="handleCheck"
+      >
+        过牌
+      </button>
 
-    <button
-      class="action-btn raise"
-      :disabled="!isMyTurn || !canRaise"
-      @click="showRaisePanel = true"
-    >
-      加注
-    </button>
+      <button
+        class="action-btn call"
+        :disabled="!isMyTurn || canCheck"
+        @click="handleCall"
+      >
+        跟注 {{ callAmount > 0 ? callAmount : '' }}
+      </button>
 
-    <button class="action-btn allin" :disabled="!isMyTurn" @click="handleAllIn">
-      全押
-    </button>
+      <button
+        class="action-btn raise"
+        :disabled="!isMyTurn || !canRaise"
+        @click="showRaisePanel = true"
+      >
+        加注
+      </button>
+
+      <button class="action-btn allin" :disabled="!isMyTurn" @click="handleAllIn">
+        全押
+      </button>
+    </template>
 
     <!-- 加注面板 -->
     <view v-if="showRaisePanel" class="raise-panel" @click.stop>
@@ -87,6 +97,7 @@ const props = withDefaults(defineProps<{
   myChips: number
   bigBlind: number
   pot: number
+  hasAllInPlayer: boolean  // 是否有玩家已全押
 }>(), {
   isMyTurn: false,
   canCheck: true,
@@ -94,7 +105,8 @@ const props = withDefaults(defineProps<{
   myCurrentBet: 0,
   myChips: 0,
   bigBlind: 20,
-  pot: 0
+  pot: 0,
+  hasAllInPlayer: false
 })
 
 const emit = defineEmits<{
@@ -108,8 +120,11 @@ const emit = defineEmits<{
 // 跟注金额
 const callAmount = computed(() => props.currentHighestBet - props.myCurrentBet)
 
+// 全押模式：当有玩家已全押时，其他玩家只能全押或弃牌
+const isAllInMode = computed(() => props.hasAllInPlayer)
+
 // 能否加注
-const canRaise = computed(() => props.myChips > callAmount.value)
+const canRaise = computed(() => props.myChips > callAmount.value && !props.hasAllInPlayer)
 
 // 最小加注
 const minRaise = computed(() => props.currentHighestBet + props.bigBlind)

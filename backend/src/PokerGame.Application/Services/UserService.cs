@@ -85,13 +85,13 @@ public class UserService : IUserService
             return (false, "今日已领取，请明天再来", null);
         }
 
-        // 计算赠送筹码（基础1000 + 连续登录奖励）
-        var giftAmount = 1000L;
+        // 计算赠送筹码（基础10000 + 连续登录奖励）
+        var giftAmount = 10000L;
 
         // 如果昨天有领取，增加连续登录奖励
         if (user.DailyGiftAt.HasValue && user.DailyGiftAt.Value.Date == DateTime.Today.AddDays(-1))
         {
-            giftAmount += 200; // 连续登录奖励
+            giftAmount += 2000; // 连续登录奖励
         }
 
         user.Chips += giftAmount;

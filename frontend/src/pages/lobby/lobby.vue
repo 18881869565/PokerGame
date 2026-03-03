@@ -8,7 +8,7 @@
       <view class="section">
         <text class="section-title">快速开始</text>
         <view class="quick-actions">
-          <button class="btn btn-primary" @click="createRoom">创建房间</button>
+          <button class="btn btn-primary" @click="showCreateModal = true">创建房间</button>
           <button class="btn btn-secondary" @click="showJoinModal = true">加入房间</button>
         </view>
       </view>
@@ -27,6 +27,31 @@
       </view>
     </view>
 
+    <!-- 创建房间弹窗 -->
+    <view class="modal" v-if="showCreateModal" @click.self="showCreateModal = false">
+      <view class="modal-content">
+        <text class="modal-title">创建房间</text>
+        <view class="chips-info">
+          <text class="chips-label">当前筹码余额</text>
+          <text class="chips-value">{{ userStore.userInfo?.chips || 0 }}</text>
+        </view>
+        <view class="input-row">
+          <text class="input-label">带入筹码</text>
+          <input
+            v-model="createChips"
+            class="input"
+            placeholder="不填则默认1000"
+            type="number"
+          />
+        </view>
+        <text class="input-tip">最低入场筹码: {{ minChips }}（50个大盲）</text>
+        <view class="modal-actions">
+          <button class="btn btn-outline" @click="showCreateModal = false">取消</button>
+          <button class="btn btn-primary" @click="createRoom">确定创建</button>
+        </view>
+      </view>
+    </view>
+
     <!-- 加入房间弹窗 -->
     <view class="modal" v-if="showJoinModal" @click.self="showJoinModal = false">
       <view class="modal-content">
@@ -38,6 +63,14 @@
           maxlength="6"
           type="number"
         />
+        <input
+          v-model="joinChips"
+          class="input"
+          placeholder="带入筹码（最低1000）"
+          type="number"
+          style="margin-top: 20rpx;"
+        />
+        <text class="input-tip">当前筹码: {{ userStore.userInfo?.chips || 0 }}</text>
         <view class="modal-actions">
           <button class="btn btn-outline" @click="showJoinModal = false">取消</button>
           <button class="btn btn-primary" @click="joinRoom">确定</button>
@@ -50,23 +83,50 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { roomApi } from '@/api'
+import { useUserStore } from '@/stores/user'
 
+const userStore = useUserStore()
+const showCreateModal = ref(false)
 const showJoinModal = ref(false)
 const roomCode = ref('')
+const createChips = ref('')
+const joinChips = ref('')
 const onlineFriends = ref<{ id: number; nickname: string }[]>([])
 
+const minChips = 1000 // 最低入场筹码
+
 const createRoom = async () => {
+  const chips = parseInt(createChips.value) || 0
+
+  if (chips > 0 && chips < minChips) {
+    uni.showToast({ title: `最低入场筹码为${minChips}`, icon: 'none' })
+    return
+  }
+
+  if (chips > (userStore.userInfo?.chips || 0)) {
+    uni.showToast({ title: '筹码不足', icon: 'none' })
+    return
+  }
+
   try {
     const res = await roomApi.create({
       maxPlayers: 9,
       smallBlind: 10,
-      bigBlind: 20
+      bigBlind: 20,
+      bringChips: chips
     })
+    console.log('[Lobby] createRoom response:', res)
     if (res.success && res.data) {
-      uni.navigateTo({ url: `/pages/room/room?roomCode=${res.data.roomCode}` })
+      const data = res.data as any
+      showCreateModal.value = false
+      createChips.value = ''
+      uni.navigateTo({ url: `/pages/room/room?roomCode=${data.roomCode}` })
+    } else {
+      uni.showToast({ title: res.message || '创建房间失败', icon: 'none' })
     }
-  } catch (e) {
-    uni.showToast({ title: '创建房间失败', icon: 'none' })
+  } catch (e: any) {
+    console.error('[Lobby] createRoom error:', e)
+    uni.showToast({ title: e.message || '创建房间失败', icon: 'none' })
   }
 }
 
@@ -75,8 +135,34 @@ const joinRoom = async () => {
     uni.showToast({ title: '请输入6位房间号', icon: 'none' })
     return
   }
-  uni.navigateTo({ url: `/pages/room/room?roomCode=${roomCode.value}` })
-  showJoinModal.value = false
+
+  const chips = parseInt(joinChips.value) || 0
+
+  if (chips > 0 && chips < minChips) {
+    uni.showToast({ title: `最低入场筹码为${minChips}`, icon: 'none' })
+    return
+  }
+
+  if (chips > (userStore.userInfo?.chips || 0)) {
+    uni.showToast({ title: '筹码不足', icon: 'none' })
+    return
+  }
+
+  // 调用后端加入房间接口
+  try {
+    const code = roomCode.value  // 保存房间号，在清空之前
+    const res = await roomApi.joinRoom(code, chips)
+    if (res.success) {
+      showJoinModal.value = false
+      roomCode.value = ''
+      joinChips.value = ''
+      uni.navigateTo({ url: `/pages/room/room?roomCode=${code}` })
+    } else {
+      uni.showToast({ title: res.message || '加入房间失败', icon: 'none' })
+    }
+  } catch (e: any) {
+    uni.showToast({ title: e.message || '加入房间失败', icon: 'none' })
+  }
 }
 
 const inviteFriend = (friend: { id: number; nickname: string }) => {
@@ -220,6 +306,55 @@ const inviteFriend = (friend: { id: number; nickname: string }) => {
   color: #ffffff;
   text-align: center;
   letter-spacing: 20rpx;
+}
+
+.input-tip {
+  display: block;
+  text-align: center;
+  font-size: 24rpx;
+  color: #999999;
+  margin-top: 16rpx;
+}
+
+.chips-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 24rpx 30rpx;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 16rpx;
+  margin-bottom: 30rpx;
+}
+
+.chips-label {
+  font-size: 28rpx;
+  color: #999999;
+}
+
+.chips-value {
+  font-size: 36rpx;
+  font-weight: bold;
+  color: #ffd700;
+}
+
+.input-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 16rpx;
+}
+
+.input-label {
+  font-size: 28rpx;
+  color: #ffffff;
+  width: 160rpx;
+  flex-shrink: 0;
+}
+
+.input-row .input {
+  flex: 1;
+  height: 80rpx;
+  font-size: 32rpx;
+  letter-spacing: normal;
 }
 
 .modal-actions {

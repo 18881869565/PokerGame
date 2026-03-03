@@ -1,33 +1,70 @@
-import { ref, onUnmounted } from 'vue'
+import { ref } from 'vue'
 import * as signalR from '@microsoft/signalr'
 import { useGameStore, type GameStateDto, type GameResultDto } from '@/stores/game'
 import { useUserStore } from '@/stores/user'
+import { useRoomStore } from '@/stores/room'
+
+// 全局单例连接状态
+let globalConnection: signalR.HubConnection | null = null
+let globalIsConnected = false
+let globalError: string | null = null
+let isConnecting = false
+let eventListenersSetup = false
 
 export const useSignalR = () => {
-  const connection = ref<signalR.HubConnection | null>(null)
-  const isConnected = ref(false)
-  const error = ref<string | null>(null)
+  const connection = ref<signalR.HubConnection | null>(globalConnection)
+  const isConnected = ref(globalIsConnected)
+  const error = ref(globalError)
 
   const gameStore = useGameStore()
   const userStore = useUserStore()
+  const roomStore = useRoomStore()
 
-  // 连接 SignalR
+  // 同步全局状态到 ref
+  const syncState = () => {
+    connection.value = globalConnection
+    isConnected.value = globalIsConnected
+    error.value = globalError
+  }
+
+  // 连接 SignalR（单例模式）
   const connect = async () => {
     const token = uni.getStorageSync('token')
 
     if (!token) {
-      error.value = '未登录'
+      globalError = '未登录'
+      syncState()
       return false
     }
 
-    try {
-      // 关闭旧连接
-      if (connection.value) {
-        await connection.value.stop()
-      }
+    // 如果已经连接，直接返回
+    if (globalConnection && globalIsConnected) {
+      console.log('[SignalR] 复用现有连接')
+      syncState()
+      return true
+    }
 
-      connection.value = new signalR.HubConnectionBuilder()
-        .withUrl('/gameHub', {
+    // 如果正在连接中，等待连接完成
+    if (isConnecting) {
+      console.log('[SignalR] 等待现有连接完成...')
+      // 简单等待机制
+      let attempts = 0
+      while (isConnecting && attempts < 50) {
+        await new Promise(resolve => setTimeout(resolve, 100))
+        attempts++
+      }
+      syncState()
+      return globalIsConnected
+    }
+
+    isConnecting = true
+
+    try {
+      // SignalR Hub 地址 - 统一使用远程服务器
+      const hubUrl = 'http://8.137.12.241:9001/gameHub'
+
+      globalConnection = new signalR.HubConnectionBuilder()
+        .withUrl(hubUrl, {
           accessTokenFactory: () => token
         })
         .withAutomaticReconnect({
@@ -36,31 +73,36 @@ export const useSignalR = () => {
         .configureLogging(signalR.LogLevel.Warning)
         .build()
 
-      // 注册事件监听
-      setupEventListeners()
+      // 注册事件监听（只注册一次）
+      if (!eventListenersSetup) {
+        setupEventListeners()
+        eventListenersSetup = true
+      }
 
       // 连接状态监听
-      connection.value.onclose(() => {
-        isConnected.value = false
+      globalConnection.onclose(() => {
+        globalIsConnected = false
         console.log('[SignalR] 连接已关闭')
+        syncState()
       })
 
-      connection.value.onreconnected(() => {
-        isConnected.value = true
+      globalConnection.onreconnected(() => {
+        globalIsConnected = true
         console.log('[SignalR] 重连成功')
         // 重连后重新加入房间
         if (gameStore.roomCode) {
           joinRoom(gameStore.roomCode)
         }
+        syncState()
       })
 
-      connection.value.onreconnecting(() => {
+      globalConnection.onreconnecting(() => {
         console.log('[SignalR] 正在重连...')
       })
 
-      await connection.value.start()
-      isConnected.value = true
-      error.value = null
+      await globalConnection.start()
+      globalIsConnected = true
+      globalError = null
       console.log('[SignalR] 连接成功')
 
       // 设置当前用户ID
@@ -68,44 +110,48 @@ export const useSignalR = () => {
         gameStore.setMyUserId(userStore.userInfo.id)
       }
 
+      syncState()
       return true
     } catch (e: any) {
-      error.value = e.message
-      isConnected.value = false
+      globalError = e.message
+      globalIsConnected = false
       console.error('[SignalR] 连接失败:', e.message)
+      syncState()
       return false
+    } finally {
+      isConnecting = false
     }
   }
 
-  // 设置事件监听
+  // 设置事件监听（全局只设置一次）
   const setupEventListeners = () => {
-    if (!connection.value) return
+    if (!globalConnection) return
 
     // 错误消息
-    connection.value.on('Error', (message: string) => {
+    globalConnection.on('Error', (message: string) => {
       console.error('[SignalR] Error:', message)
       uni.showToast({ title: message, icon: 'none' })
     })
 
     // 玩家加入
-    connection.value.on('PlayerJoined', (data: { UserId: number; ConnectionId: string; Timestamp: string }) => {
+    globalConnection.on('PlayerJoined', (data: { UserId: number; ConnectionId: string; Timestamp: string }) => {
       console.log('[SignalR] PlayerJoined:', data)
       // 可以在这里更新房间玩家列表
     })
 
     // 玩家离开
-    connection.value.on('PlayerLeft', (data: { UserId: number; ConnectionId: string; Timestamp: string }) => {
+    globalConnection.on('PlayerLeft', (data: { UserId: number; ConnectionId: string; Timestamp: string }) => {
       console.log('[SignalR] PlayerLeft:', data)
     })
 
     // 玩家断开连接
-    connection.value.on('PlayerDisconnected', (data: { UserId: number; Timestamp: string }) => {
+    globalConnection.on('PlayerDisconnected', (data: { UserId: number; Timestamp: string }) => {
       console.log('[SignalR] PlayerDisconnected:', data)
       uni.showToast({ title: '有玩家断开连接', icon: 'none' })
     })
 
     // 玩家准备
-    connection.value.on('PlayerReady', (data: { UserId: number; Success: boolean; Message: string; Timestamp: string }) => {
+    globalConnection.on('PlayerReady', (data: { UserId: number; Success: boolean; Message: string; Timestamp: string }) => {
       console.log('[SignalR] PlayerReady:', data)
       if (data.Success) {
         uni.showToast({ title: data.Message, icon: 'none' })
@@ -113,59 +159,108 @@ export const useSignalR = () => {
     })
 
     // 游戏开始
-    connection.value.on('GameStarted', (data: { Message: string }) => {
+    globalConnection.on('GameStarted', (data: { Message: string }) => {
       console.log('[SignalR] GameStarted:', data)
       uni.showToast({ title: '游戏开始！', icon: 'success' })
     })
 
+    // 游戏重置（服务重启后状态丢失）
+    globalConnection.on('GameReset', (data: { Message: string; RoomCode: string }) => {
+      console.log('[SignalR] GameReset:', data)
+      uni.showModal({
+        title: '提示',
+        content: data.Message || '游戏状态已重置，请重新开始游戏',
+        showCancel: false,
+        success: () => {
+          // lobby 是 tabbar 页面，必须用 switchTab
+          uni.switchTab({ url: '/pages/lobby/lobby' })
+        }
+      })
+    })
+
+    // 房间解散（房主离开）
+    globalConnection.on('RoomDismissed', (data: { Message: string; RoomCode: string }) => {
+      console.log('[SignalR] RoomDismissed:', data)
+      uni.showModal({
+        title: '房间已解散',
+        content: data.Message || '房主已解散房间',
+        showCancel: false,
+        success: () => {
+          uni.switchTab({ url: '/pages/lobby/lobby' })
+        }
+      })
+    })
+
+    // 玩家被踢出（筹码不足）
+    globalConnection.on('PlayerRemoved', (data: { UserId: number; Reason: string; Timestamp: string }) => {
+      console.log('[SignalR] PlayerRemoved:', data)
+      // 检查是否是自己被踢出
+      if (data.UserId === userStore.userInfo?.id) {
+        // 设置被踢出状态，在游戏结束时处理
+        roomStore.setRemoved(data.Reason || '筹码不足，已自动离开房间')
+      } else {
+        // 其他玩家被踢出，显示提示
+        uni.showToast({ title: data.Reason || '有玩家因筹码不足离开', icon: 'none' })
+      }
+    })
+
+    // 房间玩家列表更新
+    globalConnection.on('RoomPlayersUpdated', (players: any[]) => {
+      console.log('[SignalR] RoomPlayersUpdated:', players)
+      roomStore.updatePlayers(players)
+    })
+
     // 游戏状态更新（核心事件）
-    connection.value.on('GameStateUpdated', (state: GameStateDto) => {
+    globalConnection.on('GameStateUpdated', (state: GameStateDto) => {
       console.log('[SignalR] GameStateUpdated:', state)
       gameStore.updateFromServer(state)
     })
 
     // 游戏结束
-    connection.value.on('GameEnded', (result: GameResultDto) => {
+    globalConnection.on('GameEnded', (result: GameResultDto) => {
       console.log('[SignalR] GameEnded:', result)
       gameStore.setGameResult(result)
     })
   }
 
-  // 断开连接
+  // 断开连接（仅在真正需要时调用，如退出登录）
   const disconnect = async () => {
-    if (connection.value) {
+    if (globalConnection) {
       try {
-        await connection.value.stop()
+        await globalConnection.stop()
       } catch (e) {
         // ignore
       }
-      connection.value = null
-      isConnected.value = false
+      globalConnection = null
+      globalIsConnected = false
+      eventListenersSetup = false
+      syncState()
     }
   }
 
   // 加入房间
   const joinRoom = async (roomCode: string) => {
-    if (!connection.value || !isConnected.value) {
+    if (!globalConnection || !globalIsConnected) {
       const connected = await connect()
       if (!connected) return
     }
 
     try {
-      await connection.value!.invoke('JoinRoom', roomCode)
+      await globalConnection!.invoke('JoinRoom', roomCode)
       console.log('[SignalR] Joined room:', roomCode)
     } catch (e: any) {
       console.error('[SignalR] JoinRoom failed:', e.message)
-      error.value = e.message
+      globalError = e.message
+      syncState()
     }
   }
 
   // 离开房间
   const leaveRoom = async (roomCode: string) => {
-    if (!connection.value || !isConnected.value) return
+    if (!globalConnection || !globalIsConnected) return
 
     try {
-      await connection.value.invoke('LeaveRoom', roomCode)
+      await globalConnection.invoke('LeaveRoom', roomCode)
       console.log('[SignalR] Left room:', roomCode)
     } catch (e: any) {
       console.error('[SignalR] LeaveRoom failed:', e.message)
@@ -174,19 +269,27 @@ export const useSignalR = () => {
 
   // 准备/取消准备
   const readyGame = async (roomCode: string) => {
-    if (!connection.value || !isConnected.value) return
+    if (!globalConnection || !globalIsConnected) {
+      const connected = await connect()
+      if (!connected) {
+        uni.showToast({ title: '连接失败，请重试', icon: 'none' })
+        return
+      }
+    }
     try {
-      await connection.value.invoke('ReadyGame', roomCode)
+      await globalConnection!.invoke('ReadyGame', roomCode)
+      console.log('[SignalR] ReadyGame success')
     } catch (e: any) {
       console.error('[SignalR] ReadyGame failed:', e.message)
+      uni.showToast({ title: e.message || '操作失败', icon: 'none' })
     }
   }
 
   // 开始游戏
   const startGame = async (roomCode: string) => {
-    if (!connection.value || !isConnected.value) return
+    if (!globalConnection || !globalIsConnected) return
     try {
-      await connection.value.invoke('StartGame', roomCode)
+      await globalConnection.invoke('StartGame', roomCode)
     } catch (e: any) {
       console.error('[SignalR] StartGame failed:', e.message)
     }
@@ -194,59 +297,73 @@ export const useSignalR = () => {
 
   // 弃牌
   const fold = async (roomCode: string) => {
-    if (!connection.value || !isConnected.value) return
+    if (!globalConnection || !globalIsConnected) {
+      uni.showToast({ title: '连接已断开', icon: 'none' })
+      return
+    }
     try {
-      await connection.value.invoke('Fold', roomCode)
+      await globalConnection.invoke('Fold', roomCode)
     } catch (e: any) {
       console.error('[SignalR] Fold failed:', e.message)
+      uni.showToast({ title: e.message || '操作失败', icon: 'none' })
     }
   }
 
   // 过牌
   const check = async (roomCode: string) => {
-    if (!connection.value || !isConnected.value) return
+    if (!globalConnection || !globalIsConnected) {
+      uni.showToast({ title: '连接已断开', icon: 'none' })
+      return
+    }
     try {
-      await connection.value.invoke('Check', roomCode)
+      await globalConnection.invoke('Check', roomCode)
     } catch (e: any) {
       console.error('[SignalR] Check failed:', e.message)
+      uni.showToast({ title: e.message || '操作失败', icon: 'none' })
     }
   }
 
   // 跟注/下注
   const bet = async (roomCode: string, amount: number) => {
-    if (!connection.value || !isConnected.value) return
+    if (!globalConnection || !globalIsConnected) {
+      uni.showToast({ title: '连接已断开', icon: 'none' })
+      return
+    }
     try {
-      await connection.value.invoke('Bet', roomCode, amount)
+      await globalConnection.invoke('Bet', roomCode, amount)
     } catch (e: any) {
       console.error('[SignalR] Bet failed:', e.message)
+      uni.showToast({ title: e.message || '操作失败', icon: 'none' })
     }
   }
 
   // 加注
   const raise = async (roomCode: string, amount: number) => {
-    if (!connection.value || !isConnected.value) return
+    if (!globalConnection || !globalIsConnected) {
+      uni.showToast({ title: '连接已断开', icon: 'none' })
+      return
+    }
     try {
-      await connection.value.invoke('Raise', roomCode, amount)
+      await globalConnection.invoke('Raise', roomCode, amount)
     } catch (e: any) {
       console.error('[SignalR] Raise failed:', e.message)
+      uni.showToast({ title: e.message || '操作失败', icon: 'none' })
     }
   }
 
   // 全押
   const allIn = async (roomCode: string) => {
-    if (!connection.value || !isConnected.value) return
+    if (!globalConnection || !globalIsConnected) {
+      uni.showToast({ title: '连接已断开', icon: 'none' })
+      return
+    }
     try {
-      await connection.value.invoke('AllIn', roomCode)
+      await globalConnection.invoke('AllIn', roomCode)
     } catch (e: any) {
       console.error('[SignalR] AllIn failed:', e.message)
+      uni.showToast({ title: e.message || '操作失败', icon: 'none' })
     }
   }
-
-  // 组件卸载时断开连接
-  onUnmounted(() => {
-    // 注意：不要在全局 composable 中自动断开
-    // 由页面自行决定何时断开
-  })
 
   return {
     connection,

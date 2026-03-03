@@ -7,7 +7,7 @@
     <!-- 空座位 -->
     <template v-if="isEmpty">
       <view class="empty-seat">
-        <text class="empty-text">空位</text>
+        <text class="empty-text">空</text>
       </view>
     </template>
 
@@ -28,13 +28,13 @@
         <view v-if="isDealer" class="badge dealer">D</view>
         <view v-if="isSmallBlind" class="badge sb">SB</view>
         <view v-if="isBigBlind" class="badge bb">BB</view>
-        <view v-if="isAllIn" class="badge allin">ALL IN</view>
+        <view v-if="isAllIn" class="badge allin">ALL</view>
       </view>
 
       <!-- 信息 -->
       <view class="player-info">
         <text class="nickname">{{ player.nickname || '玩家' }}</text>
-        <text class="chips">💰 {{ formatChips(player.chips) }}</text>
+        <text class="chips-text">{{ formatChips(player.chips) }}</text>
       </view>
 
       <!-- 下注金额 -->
@@ -44,7 +44,7 @@
 
       <!-- 弃牌遮罩 -->
       <view v-if="isFolded" class="folded-mask">
-        <text>已弃牌</text>
+        <text>弃</text>
       </view>
 
       <!-- 离线遮罩 -->
@@ -102,17 +102,18 @@ const seatClasses = computed(() => ({
   'is-offline': !props.player?.isOnline
 }))
 
-// 座位位置（固定9座位布局）
+// 座位位置（9人布局：顶部2、左边2、右边2、底部3）
+// 底部3人(4,5,6) - 左边2人(2,3) - 右边2人(7,8) - 顶部2人(0,1)
 const seatPositions: Record<number, { top: string; left: string; transform: string }> = {
-  0: { top: '20rpx', left: '50%', transform: 'translateX(-50%)' },
-  1: { top: '120rpx', left: '85%', transform: 'translateX(-50%)' },
-  2: { top: '320rpx', left: '92%', transform: 'translateX(-50%)' },
-  3: { top: '520rpx', left: '92%', transform: 'translateX(-50%)' },
-  4: { top: '680rpx', left: '75%', transform: 'translateX(-50%)' },
-  5: { top: '680rpx', left: '55%', transform: 'translateX(-50%)' }, // 底部右侧（自己）
-  6: { top: '680rpx', left: '45%', transform: 'translateX(-50%)' }, // 底部左侧（预留）
-  7: { top: '520rpx', left: '8%', transform: 'translateX(-50%)' },
-  8: { top: '320rpx', left: '8%', transform: 'translateX(-50%)' }
+  0: { top: '10rpx', left: '35%', transform: 'translateX(-50%)' },      // 顶部左
+  1: { top: '10rpx', left: '65%', transform: 'translateX(-50%)' },      // 顶部右
+  2: { top: '180rpx', left: '2%', transform: 'translateX(0)' },         // 左边上
+  3: { top: '380rpx', left: '2%', transform: 'translateX(0)' },         // 左边下
+  4: { top: '560rpx', left: '15%', transform: 'translateX(0)' },        // 底部左
+  5: { top: '560rpx', left: '50%', transform: 'translateX(-50%)' },     // 底部中（自己）
+  6: { top: '560rpx', left: '85%', transform: 'translateX(-100%)' },    // 底部右
+  7: { top: '380rpx', left: '98%', transform: 'translateX(-100%)' },    // 右边下
+  8: { top: '180rpx', left: '98%', transform: 'translateX(-100%)' }     // 右边上
 }
 
 const seatStyle = computed(() => {
@@ -127,7 +128,10 @@ const seatStyle = computed(() => {
 // 格式化筹码
 const formatChips = (chips: number): string => {
   if (chips >= 10000) {
-    return (chips / 10000).toFixed(1) + '万'
+    return (chips / 10000).toFixed(1) + 'w'
+  }
+  if (chips >= 1000) {
+    return (chips / 1000).toFixed(1) + 'k'
   }
   return chips.toString()
 }
@@ -136,13 +140,13 @@ const formatChips = (chips: number): string => {
 <style scoped>
 .player-seat {
   position: absolute;
-  width: 120rpx;
+  width: 90rpx;
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 12rpx;
-  background: rgba(0, 0, 0, 0.6);
-  border-radius: 16rpx;
+  padding: 8rpx;
+  background: rgba(0, 0, 0, 0.7);
+  border-radius: 12rpx;
   border: 2rpx solid transparent;
   transition: all 0.3s ease;
 }
@@ -150,13 +154,13 @@ const formatChips = (chips: number): string => {
 /* 当前操作玩家 - 金色边框动画 */
 .player-seat.is-active {
   border-color: #ffd700;
-  box-shadow: 0 0 20rpx rgba(255, 215, 0, 0.6);
+  box-shadow: 0 0 16rpx rgba(255, 215, 0, 0.6);
   animation: pulse 1.5s ease-in-out infinite;
 }
 
 @keyframes pulse {
-  0%, 100% { box-shadow: 0 0 20rpx rgba(255, 215, 0, 0.6); }
-  50% { box-shadow: 0 0 30rpx rgba(255, 215, 0, 0.9); }
+  0%, 100% { box-shadow: 0 0 16rpx rgba(255, 215, 0, 0.6); }
+  50% { box-shadow: 0 0 24rpx rgba(255, 215, 0, 0.9); }
 }
 
 /* 弃牌状态 */
@@ -167,31 +171,30 @@ const formatChips = (chips: number): string => {
 /* 空座位 */
 .player-seat.is-empty {
   background: transparent;
-  border: 2rpx dashed rgba(255, 255, 255, 0.3);
+  border: 2rpx dashed rgba(255, 255, 255, 0.2);
 }
 
 .empty-seat {
   width: 100%;
-  height: 80rpx;
+  height: 60rpx;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
 .empty-text {
-  color: rgba(255, 255, 255, 0.4);
-  font-size: 24rpx;
+  color: rgba(255, 255, 255, 0.3);
+  font-size: 20rpx;
 }
 
 /* 头像 */
 .avatar-wrapper {
   position: relative;
-  margin-bottom: 8rpx;
 }
 
 .avatar {
-  width: 64rpx;
-  height: 64rpx;
+  width: 48rpx;
+  height: 48rpx;
   border-radius: 50%;
   border: 2rpx solid rgba(255, 255, 255, 0.3);
 }
@@ -205,41 +208,41 @@ const formatChips = (chips: number): string => {
 
 .avatar-text {
   color: #ffffff;
-  font-size: 28rpx;
+  font-size: 22rpx;
   font-weight: bold;
 }
 
 /* 徽章 */
 .badge {
   position: absolute;
-  font-size: 18rpx;
-  padding: 2rpx 8rpx;
-  border-radius: 8rpx;
+  font-size: 14rpx;
+  padding: 2rpx 6rpx;
+  border-radius: 6rpx;
   color: #ffffff;
   font-weight: bold;
 }
 
 .badge.dealer {
   background: #f39c12;
-  top: -8rpx;
-  right: -8rpx;
+  top: -6rpx;
+  right: -6rpx;
 }
 
 .badge.sb {
   background: #3498db;
-  bottom: -8rpx;
-  left: -8rpx;
+  bottom: -6rpx;
+  left: -6rpx;
 }
 
 .badge.bb {
   background: #9b59b6;
-  bottom: -8rpx;
-  right: -8rpx;
+  bottom: -6rpx;
+  right: -6rpx;
 }
 
 .badge.allin {
   background: #e74c3c;
-  top: -20rpx;
+  top: -16rpx;
   left: 50%;
   transform: translateX(-50%);
   white-space: nowrap;
@@ -250,30 +253,34 @@ const formatChips = (chips: number): string => {
   display: flex;
   flex-direction: column;
   align-items: center;
+  margin-top: 4rpx;
 }
 
 .nickname {
   color: #ffffff;
-  font-size: 22rpx;
-  max-width: 100rpx;
+  font-size: 18rpx;
+  max-width: 80rpx;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.chips {
+.chips-text {
   color: #ffd700;
-  font-size: 20rpx;
+  font-size: 16rpx;
 }
 
 /* 下注显示 */
 .bet-display {
-  margin-top: 6rpx;
-  padding: 4rpx 12rpx;
-  background: #e74c3c;
-  border-radius: 12rpx;
+  margin-top: 4rpx;
+  padding: 2rpx 8rpx;
+  background: #f39c12;
+  border-radius: 8rpx;
+}
+
+.bet-display text {
   color: #ffffff;
-  font-size: 20rpx;
+  font-size: 16rpx;
   font-weight: bold;
 }
 
@@ -284,8 +291,8 @@ const formatChips = (chips: number): string => {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.6);
-  border-radius: 16rpx;
+  background: rgba(0, 0, 0, 0.7);
+  border-radius: 12rpx;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -293,7 +300,7 @@ const formatChips = (chips: number): string => {
 
 .folded-mask text {
   color: rgba(255, 255, 255, 0.8);
-  font-size: 24rpx;
+  font-size: 20rpx;
 }
 
 /* 离线遮罩 */
@@ -304,7 +311,7 @@ const formatChips = (chips: number): string => {
   right: 0;
   bottom: 0;
   background: rgba(0, 0, 0, 0.7);
-  border-radius: 16rpx;
+  border-radius: 12rpx;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -312,6 +319,6 @@ const formatChips = (chips: number): string => {
 
 .offline-mask text {
   color: rgba(255, 255, 255, 0.6);
-  font-size: 22rpx;
+  font-size: 18rpx;
 }
 </style>

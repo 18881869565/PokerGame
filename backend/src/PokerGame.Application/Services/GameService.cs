@@ -17,8 +17,12 @@ public class GameService : IGameService
     private readonly IRepository<RoomPlayer> _roomPlayerRepository;
     private readonly IRepository<User> _userRepository;
     private readonly IRepository<Game> _gameRepository;
-    private readonly ConcurrentDictionary<long, GameState> _activeGames = new();
-    private readonly PokerEngine _pokerEngine = new();
+
+    // 静态字段：跨所有实例共享游戏状态（因为 GameService 是 Scoped）
+    private static readonly ConcurrentDictionary<long, GameState> _activeGames = new();
+    private static readonly PokerEngine _pokerEngine = new();
+    // 存储需要被踢出的玩家（游戏结束后筹码不足）
+    private static readonly ConcurrentDictionary<long, List<long>> _playersToRemove = new();
 
     public GameService(
         IRepository<Room> roomRepository,
@@ -163,7 +167,12 @@ public class GameService : IGameService
         // 如果游戏结束，处理结算
         if (gameState.Phase == GamePhase.Finished)
         {
-            await FinishGameAsync(roomId, gameState);
+            var playersToRemove = await FinishGameAsync(roomId, gameState);
+            // 保存需要踢出的玩家列表
+            if (playersToRemove.Count > 0)
+            {
+                _playersToRemove[roomId] = playersToRemove;
+            }
         }
 
         return (true, result.Message, MapToDto(gameState, userId), result.EventType);
@@ -261,10 +270,16 @@ public class GameService : IGameService
 
     /// <summary>
     /// 游戏结束处理
+    /// 返回需要被踢出的玩家列表（筹码不足）
     /// </summary>
-    private async Task FinishGameAsync(long roomId, GameState gameState)
+    private async Task<List<long>> FinishGameAsync(long roomId, GameState gameState)
     {
         var result = _pokerEngine.GetGameResult(gameState);
+        var playersToRemove = new List<long>();
+
+        // 获取房间信息（用于计算最低筹码）
+        var room = await _roomRepository.GetByIdAsync(roomId);
+        var minChips = room?.BigBlind * 50L ?? 1000L; // 最低入场筹码 = 50 个大盲
 
         // 更新游戏记录
         if (gameState.GameId.HasValue)
@@ -288,28 +303,43 @@ public class GameService : IGameService
             var roomPlayer = await _roomPlayerRepository.FirstOrDefaultAsync(
                 rp => rp.RoomId == roomId && rp.UserId == playerResult.UserId);
 
-            if (roomPlayer != null)
-            {
-                roomPlayer.Chips = player.Chips + playerResult.ChipsWon;
-                await _roomPlayerRepository.UpdateAsync(roomPlayer);
-            }
+            if (roomPlayer == null) continue;
+
+            // 保存本局带入的原始筹码（更新前）
+            var originalRoomChips = roomPlayer.Chips;
+
+            // 计算本局结束后的筹码（确保不为负数）
+            var finalChips = Math.Max(0, player.Chips + playerResult.ChipsWon);
+
+            // 更新房间玩家筹码
+            roomPlayer.Chips = finalChips;
+            await _roomPlayerRepository.UpdateAsync(roomPlayer);
 
             // 更新用户总筹码
             var user = await _userRepository.GetByIdAsync(playerResult.UserId);
             if (user != null)
             {
-                user.Chips = player.Chips + playerResult.ChipsWon - player.TotalBet + playerResult.ChipsWon;
+                // 用户筹码 = 用户原有筹码 - 本局带入的筹码 + 本局结束后的筹码
+                var userFinalChips = Math.Max(0, user.Chips - originalRoomChips + finalChips);
+                user.Chips = userFinalChips;
                 await _userRepository.UpdateAsync(user);
+            }
+
+            // 检查筹码是否低于最低入场筹码（房主除外）
+            if (finalChips < minChips && room != null && room.OwnerId != playerResult.UserId)
+            {
+                playersToRemove.Add(playerResult.UserId);
             }
         }
 
         // 更新房间状态
-        var room = await _roomRepository.GetByIdAsync(roomId);
         if (room != null)
         {
             room.Status = RoomStatus.Waiting;
             await _roomRepository.UpdateAsync(room);
         }
+
+        return playersToRemove;
     }
 
     /// <summary>
@@ -343,7 +373,38 @@ public class GameService : IGameService
             CurrentPlayerId = state.CurrentPlayer?.UserId,
             DealerId = state.Players.ElementAtOrDefault(state.DealerIndex)?.UserId ?? 0,
             SmallBlind = state.SmallBlind,
-            BigBlind = state.BigBlind
+            BigBlind = state.BigBlind,
+            // 检查是否有玩家已全押
+            HasAllInPlayer = state.Players.Any(p => p.Status == PlayerStatus.AllIn)
         };
+    }
+
+    /// <summary>
+    /// 获取并清除需要踢出的玩家列表（筹码不足）
+    /// </summary>
+    public List<long> GetAndClearPlayersToRemove(long roomId)
+    {
+        if (_playersToRemove.TryRemove(roomId, out var players))
+        {
+            return players;
+        }
+        return new List<long>();
+    }
+
+    /// <summary>
+    /// 结束游戏并重置房间状态（用于游戏状态丢失的情况）
+    /// </summary>
+    public async Task EndGameAndResetRoomAsync(long roomId)
+    {
+        // 从内存中移除游戏状态（如果存在）
+        _activeGames.TryRemove(roomId, out _);
+
+        // 更新房间状态为等待中
+        var room = await _roomRepository.GetByIdAsync(roomId);
+        if (room != null && room.Status == RoomStatus.Playing)
+        {
+            room.Status = RoomStatus.Waiting;
+            await _roomRepository.UpdateAsync(room);
+        }
     }
 }

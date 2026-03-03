@@ -51,4 +51,9 @@ public interface IRoomService
     /// 获取房间内的玩家列表
     /// </summary>
     Task<List<RoomPlayerDto>> GetRoomPlayersAsync(long roomId);
+
+    /// <summary>
+    /// 换位置
+    /// </summary>
+    Task<(bool Success, string Message)> ChangeSeatAsync(long userId, long roomId, int newSeatIndex);
 }

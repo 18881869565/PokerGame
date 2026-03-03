@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { userApi } from '@/api'
 
 interface UserInfo {
   id: number
@@ -34,6 +35,24 @@ export const useUserStore = defineStore('user', () => {
     }
   }
 
+  const fetchUserInfo = async () => {
+    try {
+      const res = await userApi.getProfile()
+      if (res.success && res.data) {
+        const data = res.data as any
+        setUser({
+          id: data.id,
+          username: data.username,
+          nickname: data.nickname,
+          chips: data.chips,
+          avatar: data.avatar
+        })
+      }
+    } catch (e) {
+      console.error('获取用户信息失败', e)
+    }
+  }
+
   const logout = () => {
     token.value = ''
     userInfo.value = null
@@ -65,6 +84,7 @@ export const useUserStore = defineStore('user', () => {
     setToken,
     setUser,
     updateChips,
+    fetchUserInfo,
     logout,
     init
   }

@@ -14,15 +14,18 @@ public class RoomService : IRoomService
     private readonly IRepository<Room> _roomRepository;
     private readonly IRepository<RoomPlayer> _roomPlayerRepository;
     private readonly IRepository<User> _userRepository;
+    private readonly IGameService _gameService;
 
     public RoomService(
         IRepository<Room> roomRepository,
         IRepository<RoomPlayer> roomPlayerRepository,
-        IRepository<User> userRepository)
+        IRepository<User> userRepository,
+        IGameService gameService)
     {
         _roomRepository = roomRepository;
         _roomPlayerRepository = roomPlayerRepository;
         _userRepository = userRepository;
+        _gameService = gameService;
     }
 
     /// <summary>
@@ -46,11 +49,13 @@ public class RoomService : IRoomService
             return (false, "小盲注必须小于大盲注", null);
         }
 
-        // 检查用户是否已在其他房间
+        // 检查用户是否已在其他房间，自动离开旧房间
         var existingPlayer = await _roomPlayerRepository.FirstOrDefaultAsync(rp => rp.UserId == userId && rp.IsOnline);
         if (existingPlayer != null)
         {
-            return (false, "您已在其他房间中，请先离开当前房间", null);
+            // 自动离开旧房间
+            existingPlayer.IsOnline = false;
+            await _roomPlayerRepository.UpdateAsync(existingPlayer);
         }
 
         // 生成房间号
@@ -73,7 +78,35 @@ public class RoomService : IRoomService
 
         // 房主自动加入房间
         var user = await _userRepository.GetByIdAsync(userId);
-        var bringChips = Math.Min(user!.Chips, 1000); // 默认带入最多1000筹码
+        if (user == null)
+        {
+            return (false, "用户不存在", null);
+        }
+
+        // 计算最低入场筹码（50个大盲）
+        var minChips = room.BigBlind * 50L;
+
+        // 确定带入筹码
+        long bringChips;
+        if (dto.BringChips > 0)
+        {
+            // 指定了筹码，验证其有效性
+            if (dto.BringChips < minChips)
+            {
+                return (false, $"最低入场筹码为{minChips}", null);
+            }
+            bringChips = dto.BringChips;
+        }
+        else
+        {
+            // 未指定筹码，使用默认值
+            bringChips = Math.Min(user.Chips, minChips);
+        }
+
+        if (user.Chips < bringChips)
+        {
+            return (false, "筹码不足", null);
+        }
 
         var roomPlayer = new RoomPlayer
         {
@@ -129,10 +162,26 @@ public class RoomService : IRoomService
 
         if (room.Status != RoomStatus.Waiting)
         {
-            return (false, "房间正在游戏中，无法加入");
+            // 检查是否真的有活跃游戏
+            if (_gameService.HasActiveGame(room.Id))
+            {
+                return (false, "房间正在游戏中，无法加入");
+            }
+
+            // 没有活跃游戏，自动重置房间状态
+            room.Status = RoomStatus.Waiting;
+            await _roomRepository.UpdateAsync(room);
         }
 
-        // 检查是否已在房间中
+        // 检查并自动退出其他房间
+        var otherRoomPlayers = await _roomPlayerRepository.GetListAsync(rp => rp.UserId == userId && rp.RoomId != room.Id && rp.IsOnline);
+        foreach (var otherPlayer in otherRoomPlayers)
+        {
+            otherPlayer.IsOnline = false;
+            await _roomPlayerRepository.UpdateAsync(otherPlayer);
+        }
+
+        // 检查是否已在当前房间中
         var existingPlayer = await _roomPlayerRepository.FirstOrDefaultAsync(rp => rp.RoomId == room.Id && rp.UserId == userId);
         if (existingPlayer != null)
         {
@@ -156,9 +205,21 @@ public class RoomService : IRoomService
             return (false, "用户不存在");
         }
 
-        if (bringChips <= 0)
+        // 计算最低入场筹码（50个大盲）
+        var minChips = room.BigBlind * 50L;
+
+        // 如果指定了筹码，验证其有效性
+        if (bringChips > 0)
         {
-            bringChips = Math.Min(user.Chips, room.BigBlind * 50); // 默认带入50个大盲
+            if (bringChips < minChips)
+            {
+                return (false, $"最低入场筹码为{minChips}");
+            }
+        }
+        else
+        {
+            // 未指定筹码，使用默认值
+            bringChips = Math.Min(user.Chips, minChips);
         }
 
         if (user.Chips < bringChips)
@@ -166,27 +227,20 @@ public class RoomService : IRoomService
             return (false, "筹码不足");
         }
 
+        // 确保筹码不为负数
+        bringChips = Math.Max(0, bringChips);
+
         // 找一个空座位
         var occupiedSeats = (await _roomPlayerRepository.GetListAsync(rp => rp.RoomId == room.Id))
             .Select(rp => rp.SeatIndex)
             .ToHashSet();
 
-        var seatIndex = 0;
-        for (int i = 0; i < room.MaxPlayers; i++)
-        {
-            if (!occupiedSeats.Contains(i))
-            {
-                seatIndex = i;
-                break;
-            }
-        }
-
-        // 加入房间
+        // 加入房间（不自动入座，seatIndex = -1 表示未入座）
         var roomPlayer = new RoomPlayer
         {
             RoomId = room.Id,
             UserId = userId,
-            SeatIndex = seatIndex,
+            SeatIndex = -1, // 未入座
             Chips = bringChips,
             IsReady = false,
             IsOnline = true
@@ -306,7 +360,7 @@ public class RoomService : IRoomService
     }
 
     /// <summary>
-    /// 获取房间内的玩家列表
+    /// 获取房间内的玩家列表（返回所有在线玩家）
     /// </summary>
     public async Task<List<RoomPlayerDto>> GetRoomPlayersAsync(long roomId)
     {
@@ -335,6 +389,42 @@ public class RoomService : IRoomService
         }
 
         return result.OrderBy(p => p.SeatIndex).ToList();
+    }
+
+    /// <summary>
+    /// 换位置
+    /// </summary>
+    public async Task<(bool Success, string Message)> ChangeSeatAsync(long userId, long roomId, int newSeatIndex)
+    {
+        var room = await _roomRepository.GetByIdAsync(roomId);
+        if (room == null)
+        {
+            return (false, "房间不存在");
+        }
+
+        if (newSeatIndex < 0 || newSeatIndex >= room.MaxPlayers)
+        {
+            return (false, "无效的座位号");
+        }
+
+        var roomPlayer = await _roomPlayerRepository.FirstOrDefaultAsync(rp => rp.RoomId == roomId && rp.UserId == userId);
+        if (roomPlayer == null)
+        {
+            return (false, "您不在此房间中");
+        }
+
+        // 检查目标座位是否已被占用
+        var targetSeatOccupied = await _roomPlayerRepository.AnyAsync(rp => rp.RoomId == roomId && rp.SeatIndex == newSeatIndex);
+        if (targetSeatOccupied)
+        {
+            return (false, "该座位已被占用");
+        }
+
+        // 更新座位
+        roomPlayer.SeatIndex = newSeatIndex;
+        await _roomPlayerRepository.UpdateAsync(roomPlayer);
+
+        return (true, "换位置成功");
     }
 
     /// <summary>

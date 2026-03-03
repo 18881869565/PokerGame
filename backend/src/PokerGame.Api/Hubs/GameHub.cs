@@ -17,6 +17,9 @@ public class GameHub : Hub
     private readonly IRoomService _roomService;
     private static readonly Dictionary<string, long> _connectionUserMap = new();
     private static readonly Dictionary<string, long> _connectionRoomMap = new();
+    // 跟踪每个用户的连接数
+    private static readonly Dictionary<long, HashSet<string>> _userConnectionsMap = new();
+    private static readonly object _lock = new();
 
     public GameHub(IGameService gameService, IRoomService roomService)
     {
@@ -33,6 +36,16 @@ public class GameHub : Hub
         if (userId.HasValue)
         {
             _connectionUserMap[Context.ConnectionId] = userId.Value;
+
+            // 添加到用户连接映射
+            lock (_lock)
+            {
+                if (!_userConnectionsMap.ContainsKey(userId.Value))
+                {
+                    _userConnectionsMap[userId.Value] = new HashSet<string>();
+                }
+                _userConnectionsMap[userId.Value].Add(Context.ConnectionId);
+            }
         }
         await base.OnConnectedAsync();
     }
@@ -42,11 +55,37 @@ public class GameHub : Hub
     /// </summary>
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
+        var userId = GetUserId();
+
         // 清理连接映射
         if (_connectionRoomMap.TryGetValue(Context.ConnectionId, out var roomId))
         {
-            var userId = GetUserId();
-            if (userId.HasValue)
+            _connectionRoomMap.Remove(Context.ConnectionId);
+        }
+
+        _connectionUserMap.Remove(Context.ConnectionId);
+
+        // 从用户连接映射中移除
+        bool hasOtherConnections = false;
+        if (userId.HasValue)
+        {
+            lock (_lock)
+            {
+                if (_userConnectionsMap.ContainsKey(userId.Value))
+                {
+                    _userConnectionsMap[userId.Value].Remove(Context.ConnectionId);
+                    hasOtherConnections = _userConnectionsMap[userId.Value].Count > 0;
+
+                    // 如果没有其他连接，清理映射
+                    if (!hasOtherConnections)
+                    {
+                        _userConnectionsMap.Remove(userId.Value);
+                    }
+                }
+            }
+
+            // 只有当用户没有其他连接时，才处理游戏断开
+            if (!hasOtherConnections && roomId != 0)
             {
                 await _gameService.HandlePlayerDisconnectAsync(roomId, userId.Value);
 
@@ -57,11 +96,8 @@ public class GameHub : Hub
                     Timestamp = DateTime.Now
                 });
             }
-
-            _connectionRoomMap.Remove(Context.ConnectionId);
         }
 
-        _connectionUserMap.Remove(Context.ConnectionId);
         await base.OnDisconnectedAsync(exception);
     }
 
@@ -97,6 +133,32 @@ public class GameHub : Hub
         {
             await Clients.Caller.SendAsync("GameStateUpdated", gameState);
         }
+        // 只有当房间确实在游戏中且状态丢失时，才重置（避免误判）
+        // 检查是否有已入座的玩家（说明游戏可能正在进行）
+        else if (room.Status == (int)Domain.Enums.RoomStatus.Playing)
+        {
+            // 检查房间是否有已入座的玩家在等待游戏恢复
+            var roomPlayers = await _roomService.GetRoomPlayersAsync(room.Id);
+            var seatedPlayers = roomPlayers.Where(p => p.SeatIndex >= 0).ToList();
+
+            if (seatedPlayers.Count >= 2)
+            {
+                // 有已入座玩家，说明游戏确实在进行中，状态丢失了
+                // 自动结束游戏并重置房间状态
+                await _gameService.EndGameAndResetRoomAsync(room.Id);
+                await Clients.Group($"Room_{roomCode}").SendAsync("GameReset", new
+                {
+                    Message = "游戏状态丢失，请重新开始游戏",
+                    RoomCode = roomCode
+                });
+            }
+            else
+            {
+                // 没有足够入座玩家，可能是游戏结束了但状态没更新，直接重置房间状态
+                await _gameService.EndGameAndResetRoomAsync(room.Id);
+                // 不发送 GameReset，因为这不需要中断玩家
+            }
+        }
     }
 
     /// <summary>
@@ -107,16 +169,37 @@ public class GameHub : Hub
         var userId = GetUserId();
         if (!userId.HasValue) return;
 
+        var room = await _roomService.GetByRoomCodeAsync(roomCode);
+        if (room == null) return;
+
+        var isOwner = room.OwnerId == userId.Value;
+
         await Groups.RemoveFromGroupAsync(Context.ConnectionId, $"Room_{roomCode}");
         _connectionRoomMap.Remove(Context.ConnectionId);
 
-        // 通知房间内其他玩家
-        await Clients.Group($"Room_{roomCode}").SendAsync("PlayerLeft", new
+        // 调用服务层离开房间（更新数据库）
+        var (success, message) = await _roomService.LeaveRoomAsync(userId.Value, room.Id);
+
+        if (isOwner)
         {
-            UserId = userId.Value,
-            ConnectionId = Context.ConnectionId,
-            Timestamp = DateTime.Now
-        });
+            // 房主离开，通知所有玩家房间已解散
+            await Clients.Group($"Room_{roomCode}").SendAsync("RoomDismissed", new
+            {
+                Message = "房主已解散房间",
+                RoomCode = roomCode,
+                Timestamp = DateTime.Now
+            });
+        }
+        else
+        {
+            // 普通玩家离开，通知房间内其他玩家
+            await Clients.Group($"Room_{roomCode}").SendAsync("PlayerLeft", new
+            {
+                UserId = userId.Value,
+                ConnectionId = Context.ConnectionId,
+                Timestamp = DateTime.Now
+            });
+        }
     }
 
     /// <summary>
@@ -175,10 +258,18 @@ public class GameHub : Hub
     public async Task DoAction(string roomCode, Domain.Enums.PlayerAction action, long amount = 0)
     {
         var userId = GetUserId();
-        if (!userId.HasValue) return;
+        if (!userId.HasValue)
+        {
+            await Clients.Caller.SendAsync("Error", "请先登录");
+            return;
+        }
 
         var room = await _roomService.GetByRoomCodeAsync(roomCode);
-        if (room == null) return;
+        if (room == null)
+        {
+            await Clients.Caller.SendAsync("Error", "房间不存在");
+            return;
+        }
 
         var (success, message, gameState, eventType) = await _gameService.PlayerActionAsync(room.Id, userId.Value, action, amount);
 
@@ -191,14 +282,34 @@ public class GameHub : Hub
         // 向所有玩家发送更新后的游戏状态
         await SendGameStateToAllPlayers(room.Id, roomCode);
 
-        // 如果游戏结束，发送结果
-        if (eventType == GameEventType.GameEnded)
+        // 如果游戏结束（包括玩家获胜），发送结果
+        if (eventType == GameEventType.GameEnded || eventType == GameEventType.PlayerWins)
         {
             var result = _gameService.GetGameResult(room.Id);
             if (result != null)
             {
                 await Clients.Group($"Room_{roomCode}").SendAsync("GameEnded", result);
             }
+
+            // 处理筹码不足的玩家，自动踢出
+            var playersToRemove = _gameService.GetAndClearPlayersToRemove(room.Id);
+            foreach (var playerUserId in playersToRemove)
+            {
+                // 踢出玩家
+                await _roomService.LeaveRoomAsync(playerUserId, room.Id);
+
+                // 通知被踢出的玩家
+                await Clients.Group($"Room_{roomCode}").SendAsync("PlayerRemoved", new
+                {
+                    UserId = playerUserId,
+                    Reason = "筹码不足，已自动离开房间",
+                    Timestamp = DateTime.Now
+                });
+            }
+
+            // 发送更新后的房间玩家列表
+            var updatedPlayers = await _roomService.GetRoomPlayersAsync(room.Id);
+            await Clients.Group($"Room_{roomCode}").SendAsync("RoomPlayersUpdated", updatedPlayers);
         }
     }
 

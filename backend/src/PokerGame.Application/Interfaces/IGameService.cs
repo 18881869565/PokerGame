@@ -43,4 +43,14 @@ public interface IGameService
     /// 获取游戏结果
     /// </summary>
     GameResultDto? GetGameResult(long roomId);
+
+    /// <summary>
+    /// 获取并清除需要踢出的玩家列表（筹码不足）
+    /// </summary>
+    List<long> GetAndClearPlayersToRemove(long roomId);
+
+    /// <summary>
+    /// 结束游戏并重置房间状态（用于游戏状态丢失的情况）
+    /// </summary>
+    Task EndGameAndResetRoomAsync(long roomId);
 }

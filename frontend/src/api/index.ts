@@ -1,4 +1,5 @@
-const BASE_URL = '/api'
+// API 基础地址 - 统一使用远程服务器
+const BASE_URL = 'http://8.137.12.241:9001/api'
 
 interface RequestOptions {
   url: string
@@ -36,6 +37,9 @@ export const request = async <T = any>(options: RequestOptions): Promise<ApiResp
           uni.removeStorageSync('userInfo')
           uni.navigateTo({ url: '/pages/login/login' })
           reject(new Error('未授权'))
+        } else if (res.statusCode >= 400 && res.statusCode < 500) {
+          // 业务错误，返回响应数据让调用方处理
+          resolve(res.data as ApiResponse<T>)
         } else {
           reject(new Error(res.data?.message || '请求失败'))
         }
@@ -70,14 +74,20 @@ export const userApi = {
 
 // 房间相关 API
 export const roomApi = {
-  create: (data: { maxPlayers: number; smallBlind: number; bigBlind: number }) =>
+  create: (data: { maxPlayers: number; smallBlind: number; bigBlind: number; bringChips?: number }) =>
     request<{ roomCode: string; roomId: number }>({ url: '/room/create', method: 'POST', data }),
 
   getRoom: (roomCode: string) =>
     request({ url: `/room/${roomCode}` }),
 
+  joinRoom: (roomCode: string, bringChips: number = 0) =>
+    request({ url: '/room/join', method: 'POST', data: { roomCode, bringChips } }),
+
   getQRCode: (roomCode: string) =>
-    request<{ QRCodeUrl: string }>({ url: `/room/qrcode/${roomCode}`, method: 'POST' })
+    request<{ QRCodeUrl: string }>({ url: `/room/qrcode/${roomCode}` }),
+
+  changeSeat: (roomId: number, seatIndex: number) =>
+    request({ url: `/room/${roomId}/changeseat`, method: 'POST', data: { seatIndex } })
 }
 
 // 好友相关 API

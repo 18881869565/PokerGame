@@ -291,7 +291,35 @@ public class PokerEngine
             return GameStateResult.Ok(state, GameEventType.PlayerWins, "只剩一名玩家，直接获胜");
         }
 
-        // 检查本轮下注是否结束
+        // 获取可以操作的玩家（未弃牌、未全押、还有筹码）
+        var actingPlayers = state.GetActingPlayers();
+
+        // 如果只剩 0 或 1 个可以操作的玩家，但还有多个活跃玩家
+        // 需要让剩下的玩家有机会操作（跟注全押或弃牌）
+        if (actingPlayers.Count <= 1 && activePlayers.Count > 1)
+        {
+            // 检查是否所有人都已匹配当前最高下注
+            bool allMatched = activePlayers.All(p =>
+                p.Status == PlayerStatus.AllIn ||
+                p.CurrentBet >= state.CurrentHighestBet);
+
+            if (!allMatched)
+            {
+                // 还有玩家没有匹配最高下注，需要轮到他们操作
+                state.CurrentPlayerIndex = state.GetNextPlayerIndex(state.CurrentPlayerIndex);
+                if (state.CurrentPlayerIndex >= 0)
+                {
+                    state.Players[state.CurrentPlayerIndex].Status = PlayerStatus.MyTurn;
+                }
+                return GameStateResult.Ok(state, GameEventType.TurnChanged, "轮到下一位玩家");
+            }
+
+            // 所有人都已匹配最高下注，且只剩 0-1 个可操作玩家
+            // 说明其他人已全押，直接进入摊牌
+            return GoToShowdown(state);
+        }
+
+        // 检查本轮下注是否结束（多人仍在操作）
         if (state.IsBettingRoundComplete())
         {
             // 进入下一阶段
@@ -306,6 +334,53 @@ public class PokerEngine
         }
 
         return GameStateResult.Ok(state, GameEventType.TurnChanged, "轮到下一位玩家");
+    }
+
+    /// <summary>
+    /// 直接进入摊牌（发完所有公共牌）
+    /// </summary>
+    private GameStateResult GoToShowdown(GameState state)
+    {
+        // 发完所有剩余的公共牌
+        while (state.CommunityCards.Count < 5)
+        {
+            state.Deck.Deal(); // 烧一张牌
+            var cardsToDeal = state.Phase switch
+            {
+                GamePhase.PreFlop => 3, // 翻牌
+                GamePhase.Flop => 1,    // 转牌
+                GamePhase.Turn => 1,    // 河牌
+                _ => 5 - state.CommunityCards.Count
+            };
+
+            if (state.CommunityCards.Count == 0 && cardsToDeal > 3)
+            {
+                cardsToDeal = 3;
+            }
+            else if (state.CommunityCards.Count == 3 && cardsToDeal > 1)
+            {
+                cardsToDeal = 1;
+            }
+            else if (state.CommunityCards.Count == 4 && cardsToDeal > 1)
+            {
+                cardsToDeal = 1;
+            }
+
+            state.CommunityCards.AddRange(state.Deck.DealMultiple(cardsToDeal));
+
+            // 更新阶段
+            state.Phase = state.CommunityCards.Count switch
+            {
+                3 => GamePhase.Flop,
+                4 => GamePhase.Turn,
+                5 => GamePhase.River,
+                _ => state.Phase
+            };
+        }
+
+        // 进入摊牌决定获胜者
+        state.Phase = GamePhase.Showdown;
+        return DetermineWinner(state);
     }
 
     /// <summary>

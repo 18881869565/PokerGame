@@ -46,14 +46,14 @@
       {
         "pagePath": "pages/index/index",
         "text": "首页",
-        "iconPath": "static/tabbar/home.png",
-        "selectedIconPath": "static/tabbar/home-active.png"
+        "iconPath": "static/tabbar/home.svg",
+        "selectedIconPath": "static/tabbar/home-active.svg"
       },
       {
         "pagePath": "pages/lobby/lobby",
         "text": "大厅",
-        "iconPath": "static/tabbar/lobby.png",
-        "selectedIconPath": "static/tabbar/lobby-active.png"
+        "iconPath": "static/tabbar/lobby.svg",
+        "selectedIconPath": "static/tabbar/lobby-active.svg"
       }
     ]
   }

@@ -50,10 +50,10 @@
       "mode": "hash"
     },
     "devServer": {
-      "port": 5173,
+      "port": 9000,
       "proxy": {
         "/api": {
-          "target": "http://localhost:5000",
+          "target": "http://8.137.12.241:9001",
           "changeOrigin": true
         }
       }

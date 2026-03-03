@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using PokerGame.Api.Controllers;
+using PokerGame.Api.Hubs;
 using PokerGame.Application.Interfaces;
 using PokerGame.Application.DTOs;
 
@@ -14,10 +16,12 @@ namespace PokerGame.Api.Controllers;
 public class RoomController : BaseController
 {
     private readonly IRoomService _roomService;
+    private readonly IHubContext<GameHub> _hubContext;
 
-    public RoomController(IRoomService roomService)
+    public RoomController(IRoomService roomService, IHubContext<GameHub> hubContext)
     {
         _roomService = roomService;
+        _hubContext = hubContext;
     }
 
     /// <summary>
@@ -30,7 +34,8 @@ public class RoomController : BaseController
         {
             MaxPlayers = request.MaxPlayers,
             SmallBlind = request.SmallBlind,
-            BigBlind = request.BigBlind
+            BigBlind = request.BigBlind,
+            BringChips = request.BringChips
         };
 
         var (success, message, result) = await _roomService.CreateRoomAsync(CurrentUserId, dto);
@@ -139,6 +144,35 @@ public class RoomController : BaseController
     }
 
     /// <summary>
+    /// 换位置
+    /// </summary>
+    [HttpPost("{roomId}/changeseat")]
+    public async Task<IActionResult> ChangeSeat(long roomId, [FromBody] ChangeSeatRequest request)
+    {
+        var (success, message) = await _roomService.ChangeSeatAsync(CurrentUserId, roomId, request.SeatIndex);
+
+        if (!success)
+        {
+            return Fail(message);
+        }
+
+        // 获取房间信息以获取 roomCode
+        var room = await _roomService.GetByIdAsync(roomId);
+        if (room != null)
+        {
+            // 通知房间内所有玩家座位变更
+            await _hubContext.Clients.Group($"Room_{room.RoomCode}").SendAsync("SeatChanged", new
+            {
+                UserId = CurrentUserId,
+                SeatIndex = request.SeatIndex,
+                Timestamp = DateTime.Now
+            });
+        }
+
+        return Success(message);
+    }
+
+    /// <summary>
     /// 生成房间二维码
     /// </summary>
     [HttpGet("qrcode/{roomCode}")]
@@ -171,6 +205,11 @@ public class CreateRoomRequest
     /// 大盲注
     /// </summary>
     public int BigBlind { get; set; } = 20;
+
+    /// <summary>
+    /// 带入筹码（0表示默认）
+    /// </summary>
+    public long BringChips { get; set; } = 0;
 }
 
 /// <summary>
@@ -187,4 +226,15 @@ public class JoinRoomRequest
     /// 带入筹码（0表示默认）
     /// </summary>
     public long BringChips { get; set; } = 0;
+}
+
+/// <summary>
+/// 换位置请求
+/// </summary>
+public class ChangeSeatRequest
+{
+    /// <summary>
+    /// 目标座位号
+    /// </summary>
+    public int SeatIndex { get; set; }
 }
