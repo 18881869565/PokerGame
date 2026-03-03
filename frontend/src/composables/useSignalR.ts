@@ -1,6 +1,13 @@
 import { ref } from 'vue'
 import * as signalR from '@microsoft/signalr'
 import { useGameStore, type GameStateDto, type GameResultDto } from '@/stores/game'
+import {
+  useZjhGameStore,
+  type ZjhGameStateDto,
+  type ZjhGameResultDto,
+  type ZjhAvailableActionsDto,
+  type ZjhPlayerHandResultDto
+} from '@/stores/zjhGame'
 import { useUserStore } from '@/stores/user'
 import { useRoomStore } from '@/stores/room'
 
@@ -17,6 +24,7 @@ export const useSignalR = () => {
   const error = ref(globalError)
 
   const gameStore = useGameStore()
+  const zjhGameStore = useZjhGameStore()
   const userStore = useUserStore()
   const roomStore = useRoomStore()
 
@@ -221,6 +229,39 @@ export const useSignalR = () => {
       console.log('[SignalR] GameEnded:', result)
       gameStore.setGameResult(result)
     })
+
+    // ========== 扎金花游戏事件 ==========
+    const zjhGameStore = useZjhGameStore()
+
+    // 扎金花游戏开始
+    globalConnection.on('ZjhGameStarted', (data: { Message: string }) => {
+      console.log('[SignalR] ZjhGameStarted:', data)
+      uni.showToast({ title: '游戏开始！', icon: 'success' })
+    })
+
+    // 扎金花游戏状态更新
+    globalConnection.on('ZjhGameStateUpdated', (state: ZjhGameStateDto) => {
+      console.log('[SignalR] ZjhGameStateUpdated:', state)
+      zjhGameStore.updateFromServer(state)
+    })
+
+    // 扎金花游戏结束
+    globalConnection.on('ZjhGameEnded', (result: ZjhGameResultDto) => {
+      console.log('[SignalR] ZjhGameEnded:', result)
+      zjhGameStore.setGameResult(result)
+    })
+
+    // 扎金花可用操作
+    globalConnection.on('ZjhAvailableActions', (actions: ZjhAvailableActionsDto) => {
+      console.log('[SignalR] ZjhAvailableActions:', actions)
+      zjhGameStore.setAvailableActions(actions)
+    })
+
+    // 扎金花比牌输家看牌
+    globalConnection.on('ZjhCompareLose', (result: ZjhPlayerHandResultDto) => {
+      console.log('[SignalR] ZjhCompareLose:', result)
+      zjhGameStore.setCompareLoseResult(result)
+    })
   }
 
   // 断开连接（仅在真正需要时调用，如退出登录）
@@ -365,6 +406,116 @@ export const useSignalR = () => {
     }
   }
 
+  // ========== 扎金花游戏方法 ==========
+
+  // 开始扎金花游戏
+  const startZjhGame = async (roomCode: string) => {
+    if (!globalConnection || !globalIsConnected) {
+      const connected = await connect()
+      if (!connected) return
+    }
+    try {
+      await globalConnection!.invoke('StartZjhGame', roomCode)
+    } catch (e: any) {
+      console.error('[SignalR] StartZjhGame failed:', e.message)
+      uni.showToast({ title: e.message || '操作失败', icon: 'none' })
+    }
+  }
+
+  // 扎金花-看牌
+  const zjhLook = async (roomCode: string) => {
+    if (!globalConnection || !globalIsConnected) {
+      uni.showToast({ title: '连接已断开', icon: 'none' })
+      return
+    }
+    try {
+      await globalConnection.invoke('ZjhLook', roomCode)
+    } catch (e: any) {
+      console.error('[SignalR] ZjhLook failed:', e.message)
+      uni.showToast({ title: e.message || '操作失败', icon: 'none' })
+    }
+  }
+
+  // 扎金花-下注
+  const zjhBet = async (roomCode: string) => {
+    if (!globalConnection || !globalIsConnected) {
+      uni.showToast({ title: '连接已断开', icon: 'none' })
+      return
+    }
+    try {
+      await globalConnection.invoke('ZjhBet', roomCode)
+    } catch (e: any) {
+      console.error('[SignalR] ZjhBet failed:', e.message)
+      uni.showToast({ title: e.message || '操作失败', icon: 'none' })
+    }
+  }
+
+  // 扎金花-加注
+  const zjhRaise = async (roomCode: string, newBetAmount: number) => {
+    if (!globalConnection || !globalIsConnected) {
+      uni.showToast({ title: '连接已断开', icon: 'none' })
+      return
+    }
+    try {
+      await globalConnection.invoke('ZjhRaise', roomCode, newBetAmount)
+    } catch (e: any) {
+      console.error('[SignalR] ZjhRaise failed:', e.message)
+      uni.showToast({ title: e.message || '操作失败', icon: 'none' })
+    }
+  }
+
+  // 扎金花-比牌
+  const zjhCompare = async (roomCode: string, targetUserId: number) => {
+    if (!globalConnection || !globalIsConnected) {
+      uni.showToast({ title: '连接已断开', icon: 'none' })
+      return
+    }
+    try {
+      await globalConnection.invoke('ZjhCompare', roomCode, targetUserId)
+    } catch (e: any) {
+      console.error('[SignalR] ZjhCompare failed:', e.message)
+      uni.showToast({ title: e.message || '操作失败', icon: 'none' })
+    }
+  }
+
+  // 扎金花-弃牌
+  const zjhFold = async (roomCode: string) => {
+    if (!globalConnection || !globalIsConnected) {
+      uni.showToast({ title: '连接已断开', icon: 'none' })
+      return
+    }
+    try {
+      await globalConnection.invoke('ZjhFold', roomCode)
+    } catch (e: any) {
+      console.error('[SignalR] ZjhFold failed:', e.message)
+      uni.showToast({ title: e.message || '操作失败', icon: 'none' })
+    }
+  }
+
+  // 扎金花-全押
+  const zjhAllIn = async (roomCode: string) => {
+    if (!globalConnection || !globalIsConnected) {
+      uni.showToast({ title: '连接已断开', icon: 'none' })
+      return
+    }
+    try {
+      await globalConnection.invoke('ZjhAllIn', roomCode)
+    } catch (e: any) {
+      console.error('[SignalR] ZjhAllIn failed:', e.message)
+      uni.showToast({ title: e.message || '操作失败', icon: 'none' })
+    }
+  }
+
+  // 扎金花-获取可用操作
+  const getZjhAvailableActions = async (roomCode: string) => {
+    if (!globalConnection || !globalIsConnected) return
+    try {
+      await globalConnection.invoke('GetZjhAvailableActions', roomCode)
+    } catch (e: any) {
+      console.error('[SignalR] GetZjhAvailableActions failed:', e.message)
+    }
+  }
+
   return {
     connection,
     isConnected,
@@ -379,6 +530,15 @@ export const useSignalR = () => {
     check,
     bet,
     raise,
-    allIn
+    allIn,
+    // 扎金花
+    startZjhGame,
+    zjhLook,
+    zjhBet,
+    zjhRaise,
+    zjhCompare,
+    zjhFold,
+    zjhAllIn,
+    getZjhAvailableActions
   }
 }

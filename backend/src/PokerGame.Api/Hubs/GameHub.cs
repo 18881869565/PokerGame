@@ -8,12 +8,13 @@ using PokerGame.Domain.GameLogic;
 namespace PokerGame.Api.Hubs;
 
 /// <summary>
-/// 游戏实时通信 Hub
+/// 游戏实时通信 Hub（支持德州扑克和扎金花）
 /// </summary>
 [Authorize]
 public class GameHub : Hub
 {
     private readonly IGameService _gameService;
+    private readonly IZjhGameService _zjhGameService;
     private readonly IRoomService _roomService;
     private static readonly Dictionary<string, long> _connectionUserMap = new();
     private static readonly Dictionary<string, long> _connectionRoomMap = new();
@@ -21,9 +22,10 @@ public class GameHub : Hub
     private static readonly Dictionary<long, HashSet<string>> _userConnectionsMap = new();
     private static readonly object _lock = new();
 
-    public GameHub(IGameService gameService, IRoomService roomService)
+    public GameHub(IGameService gameService, IZjhGameService zjhGameService, IRoomService roomService)
     {
         _gameService = gameService;
+        _zjhGameService = zjhGameService;
         _roomService = roomService;
     }
 
@@ -127,36 +129,55 @@ public class GameHub : Hub
             Timestamp = DateTime.Now
         });
 
-        // 如果有正在进行的游戏，发送游戏状态
-        var gameState = _gameService.GetGameStateForPlayer(room.Id, userId.Value);
-        if (gameState != null)
-        {
-            await Clients.Caller.SendAsync("GameStateUpdated", gameState);
-        }
-        // 只有当房间确实在游戏中且状态丢失时，才重置（避免误判）
-        // 检查是否有已入座的玩家（说明游戏可能正在进行）
-        else if (room.Status == (int)Domain.Enums.RoomStatus.Playing)
-        {
-            // 检查房间是否有已入座的玩家在等待游戏恢复
-            var roomPlayers = await _roomService.GetRoomPlayersAsync(room.Id);
-            var seatedPlayers = roomPlayers.Where(p => p.SeatIndex >= 0).ToList();
+        // 根据游戏类型检查是否有正在进行的游戏
+        var gameType = room.GameType; // 0=德州扑克, 1=扎金花
 
-            if (seatedPlayers.Count >= 2)
+        if (gameType == 1) // 扎金花
+        {
+            var zjhGameState = _zjhGameService.GetGameStateForPlayer(room.Id, userId.Value);
+            if (zjhGameState != null)
             {
-                // 有已入座玩家，说明游戏确实在进行中，状态丢失了
-                // 自动结束游戏并重置房间状态
-                await _gameService.EndGameAndResetRoomAsync(room.Id);
+                await Clients.Caller.SendAsync("ZjhGameStateUpdated", zjhGameState);
+            }
+            else if (room.Status == (int)Domain.Enums.RoomStatus.Playing)
+            {
+                // 游戏状态丢失，重置房间
+                await _zjhGameService.EndGameAndResetRoomAsync(room.Id);
                 await Clients.Group($"Room_{roomCode}").SendAsync("GameReset", new
                 {
                     Message = "游戏状态丢失，请重新开始游戏",
                     RoomCode = roomCode
                 });
             }
-            else
+        }
+        else // 德州扑克
+        {
+            var gameState = _gameService.GetGameStateForPlayer(room.Id, userId.Value);
+            if (gameState != null)
             {
-                // 没有足够入座玩家，可能是游戏结束了但状态没更新，直接重置房间状态
-                await _gameService.EndGameAndResetRoomAsync(room.Id);
-                // 不发送 GameReset，因为这不需要中断玩家
+                await Clients.Caller.SendAsync("GameStateUpdated", gameState);
+            }
+            else if (room.Status == (int)Domain.Enums.RoomStatus.Playing)
+            {
+                // 检查房间是否有已入座的玩家在等待游戏恢复
+                var roomPlayers = await _roomService.GetRoomPlayersAsync(room.Id);
+                var seatedPlayers = roomPlayers.Where(p => p.SeatIndex >= 0).ToList();
+
+                if (seatedPlayers.Count >= 2)
+                {
+                    // 有已入座玩家，说明游戏确实在进行中，状态丢失了
+                    await _gameService.EndGameAndResetRoomAsync(room.Id);
+                    await Clients.Group($"Room_{roomCode}").SendAsync("GameReset", new
+                    {
+                        Message = "游戏状态丢失，请重新开始游戏",
+                        RoomCode = roomCode
+                    });
+                }
+                else
+                {
+                    // 没有足够入座玩家，直接重置房间状态
+                    await _gameService.EndGameAndResetRoomAsync(room.Id);
+                }
             }
         }
     }
@@ -337,6 +358,289 @@ public class GameHub : Hub
     /// 全押
     /// </summary>
     public Task AllIn(string roomCode) => DoAction(roomCode, Domain.Enums.PlayerAction.AllIn);
+
+    #region 扎金花游戏
+
+    /// <summary>
+    /// 开始扎金花游戏（仅房主）
+    /// </summary>
+    public async Task StartZjhGame(string roomCode)
+    {
+        var userId = GetUserId();
+        if (!userId.HasValue) return;
+
+        var room = await _roomService.GetByRoomCodeAsync(roomCode);
+        if (room == null)
+        {
+            await Clients.Caller.SendAsync("Error", "房间不存在");
+            return;
+        }
+
+        var (success, message, state) = await _zjhGameService.StartGameAsync(room.Id, userId.Value);
+
+        if (!success)
+        {
+            await Clients.Caller.SendAsync("Error", message);
+            return;
+        }
+
+        // 向所有玩家发送游戏状态
+        await SendZjhGameStateToAllPlayers(room.Id, roomCode);
+        await Clients.Group($"Room_{roomCode}").SendAsync("ZjhGameStarted", new { Message = message });
+    }
+
+    /// <summary>
+    /// 扎金花-看牌
+    /// </summary>
+    public async Task ZjhLook(string roomCode)
+    {
+        var userId = GetUserId();
+        if (!userId.HasValue) return;
+
+        var room = await _roomService.GetByRoomCodeAsync(roomCode);
+        if (room == null)
+        {
+            await Clients.Caller.SendAsync("Error", "房间不存在");
+            return;
+        }
+
+        var (success, message, state) = await _zjhGameService.LookCardsAsync(room.Id, userId.Value);
+
+        if (!success)
+        {
+            await Clients.Caller.SendAsync("Error", message);
+            return;
+        }
+
+        // 只向当前玩家发送更新（看牌是私密操作）
+        await Clients.Caller.SendAsync("ZjhGameStateUpdated", state);
+    }
+
+    /// <summary>
+    /// 扎金花-下注
+    /// </summary>
+    public async Task ZjhBet(string roomCode)
+    {
+        var userId = GetUserId();
+        if (!userId.HasValue) return;
+
+        var room = await _roomService.GetByRoomCodeAsync(roomCode);
+        if (room == null)
+        {
+            await Clients.Caller.SendAsync("Error", "房间不存在");
+            return;
+        }
+
+        var (success, message, state) = await _zjhGameService.BetAsync(room.Id, userId.Value);
+
+        if (!success)
+        {
+            await Clients.Caller.SendAsync("Error", message);
+            return;
+        }
+
+        await SendZjhGameStateToAllPlayers(room.Id, roomCode);
+
+        if (state?.Phase == ZjhGamePhase.Finished)
+        {
+            var result = _zjhGameService.GetGameResult(room.Id);
+            if (result != null)
+            {
+                await Clients.Group($"Room_{roomCode}").SendAsync("ZjhGameEnded", result);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 扎金花-加注
+    /// </summary>
+    public async Task ZjhRaise(string roomCode, long newBetAmount)
+    {
+        var userId = GetUserId();
+        if (!userId.HasValue) return;
+
+        var room = await _roomService.GetByRoomCodeAsync(roomCode);
+        if (room == null)
+        {
+            await Clients.Caller.SendAsync("Error", "房间不存在");
+            return;
+        }
+
+        var (success, message, state) = await _zjhGameService.RaiseAsync(room.Id, userId.Value, newBetAmount);
+
+        if (!success)
+        {
+            await Clients.Caller.SendAsync("Error", message);
+            return;
+        }
+
+        await SendZjhGameStateToAllPlayers(room.Id, roomCode);
+    }
+
+    /// <summary>
+    /// 扎金花-比牌
+    /// </summary>
+    public async Task ZjhCompare(string roomCode, long targetUserId)
+    {
+        var userId = GetUserId();
+        if (!userId.HasValue) return;
+
+        var room = await _roomService.GetByRoomCodeAsync(roomCode);
+        if (room == null)
+        {
+            await Clients.Caller.SendAsync("Error", "房间不存在");
+            return;
+        }
+
+        var (success, message, state, result, compareResult) = await _zjhGameService.CompareAsync(room.Id, userId.Value, targetUserId);
+
+        if (!success)
+        {
+            await Clients.Caller.SendAsync("Error", message);
+            return;
+        }
+
+        await SendZjhGameStateToAllPlayers(room.Id, roomCode);
+
+        // 如果比牌输家没看过牌，发送他的牌给他
+        if (compareResult != null && compareResult.LoserHasNotLooked && compareResult.LoserHand != null)
+        {
+            // 找到输家的连接并发送事件
+            var loserConnections = _connectionRoomMap
+                .Where(kvp => kvp.Value == room.Id && _connectionUserMap.TryGetValue(kvp.Key, out var uid) && uid == compareResult.LoserId)
+                .Select(kvp => kvp.Key)
+                .ToList();
+
+            foreach (var connectionId in loserConnections)
+            {
+                await Clients.Client(connectionId).SendAsync("ZjhCompareLose", compareResult.LoserHand);
+            }
+        }
+
+        if (result != null)
+        {
+            await Clients.Group($"Room_{roomCode}").SendAsync("ZjhGameEnded", result);
+        }
+    }
+
+    /// <summary>
+    /// 扎金花-弃牌
+    /// </summary>
+    public async Task ZjhFold(string roomCode)
+    {
+        var userId = GetUserId();
+        if (!userId.HasValue) return;
+
+        var room = await _roomService.GetByRoomCodeAsync(roomCode);
+        if (room == null)
+        {
+            await Clients.Caller.SendAsync("Error", "房间不存在");
+            return;
+        }
+
+        var (success, message, state, result) = await _zjhGameService.FoldAsync(room.Id, userId.Value);
+
+        if (!success)
+        {
+            await Clients.Caller.SendAsync("Error", message);
+            return;
+        }
+
+        await SendZjhGameStateToAllPlayers(room.Id, roomCode);
+
+        if (result != null)
+        {
+            await Clients.Group($"Room_{roomCode}").SendAsync("ZjhGameEnded", result);
+        }
+    }
+
+    /// <summary>
+    /// 扎金花-全押
+    /// </summary>
+    public async Task ZjhAllIn(string roomCode)
+    {
+        var userId = GetUserId();
+        if (!userId.HasValue) return;
+
+        var room = await _roomService.GetByRoomCodeAsync(roomCode);
+        if (room == null)
+        {
+            await Clients.Caller.SendAsync("Error", "房间不存在");
+            return;
+        }
+
+        var (success, message, state) = await _zjhGameService.AllInAsync(room.Id, userId.Value);
+
+        if (!success)
+        {
+            await Clients.Caller.SendAsync("Error", message);
+            return;
+        }
+
+        await SendZjhGameStateToAllPlayers(room.Id, roomCode);
+
+        if (state?.Phase == ZjhGamePhase.Finished)
+        {
+            var result = _zjhGameService.GetGameResult(room.Id);
+            if (result != null)
+            {
+                await Clients.Group($"Room_{roomCode}").SendAsync("ZjhGameEnded", result);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 扎金花-获取可用操作
+    /// </summary>
+    public async Task GetZjhAvailableActions(string roomCode)
+    {
+        var userId = GetUserId();
+        if (!userId.HasValue) return;
+
+        var room = await _roomService.GetByRoomCodeAsync(roomCode);
+        if (room == null) return;
+
+        var actions = _zjhGameService.GetAvailableActions(room.Id, userId.Value);
+        if (actions != null)
+        {
+            await Clients.Caller.SendAsync("ZjhAvailableActions", actions);
+        }
+    }
+
+    /// <summary>
+    /// 向所有扎金花玩家发送游戏状态（每人看到自己的手牌）
+    /// </summary>
+    private async Task SendZjhGameStateToAllPlayers(long roomId, string roomCode)
+    {
+        var roomConnections = _connectionRoomMap
+            .Where(kvp => kvp.Value == roomId)
+            .Select(kvp => kvp.Key)
+            .ToList();
+
+        foreach (var connectionId in roomConnections)
+        {
+            if (_connectionUserMap.TryGetValue(connectionId, out var userId))
+            {
+                var state = _zjhGameService.GetGameStateForPlayer(roomId, userId);
+                if (state != null)
+                {
+                    await Clients.Client(connectionId).SendAsync("ZjhGameStateUpdated", state);
+
+                    // 如果轮到该玩家操作，发送可用操作
+                    if (state.CurrentPlayerId == userId)
+                    {
+                        var actions = _zjhGameService.GetAvailableActions(roomId, userId);
+                        if (actions != null)
+                        {
+                            await Clients.Client(connectionId).SendAsync("ZjhAvailableActions", actions);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #endregion
 
     /// <summary>
     /// 获取当前用户ID
