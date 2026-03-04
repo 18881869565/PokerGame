@@ -203,13 +203,36 @@ public class GameHub : Hub
 
         if (isOwner)
         {
-            // 房主离开，通知所有玩家房间已解散
-            await Clients.Group($"Room_{roomCode}").SendAsync("RoomDismissed", new
+            if (message == "房主已转移")
             {
-                Message = "房主已解散房间",
-                RoomCode = roomCode,
-                Timestamp = DateTime.Now
-            });
+                // 房主转移给其他玩家，重新获取房间信息
+                var updatedRoom = await _roomService.GetByRoomCodeAsync(roomCode);
+                await Clients.Group($"Room_{roomCode}").SendAsync("OwnerChanged", new
+                {
+                    OldOwnerId = userId.Value,
+                    NewOwnerId = updatedRoom?.OwnerId,
+                    Message = "房主已离开，房主身份已转移",
+                    RoomCode = roomCode,
+                    Timestamp = DateTime.Now
+                });
+                // 同时发送玩家离开通知
+                await Clients.Group($"Room_{roomCode}").SendAsync("PlayerLeft", new
+                {
+                    UserId = userId.Value,
+                    ConnectionId = Context.ConnectionId,
+                    Timestamp = DateTime.Now
+                });
+            }
+            else
+            {
+                // 没有其他玩家，房间解散
+                await Clients.Group($"Room_{roomCode}").SendAsync("RoomDismissed", new
+                {
+                    Message = "房主已解散房间",
+                    RoomCode = roomCode,
+                    Timestamp = DateTime.Now
+                });
+            }
         }
         else
         {

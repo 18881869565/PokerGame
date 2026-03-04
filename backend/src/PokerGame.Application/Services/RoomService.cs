@@ -70,6 +70,7 @@ public class RoomService : IRoomService
             SmallBlind = dto.SmallBlind,
             BigBlind = dto.BigBlind,
             Status = RoomStatus.Waiting,
+            GameType = dto.GameType,
             CreatedAt = DateTime.Now
         };
 
@@ -268,10 +269,30 @@ public class RoomService : IRoomService
             return (false, "您不在此房间中");
         }
 
-        // 如果是房主离开，解散房间
+        // 如果是房主离开，转移房主身份给最早进入的玩家
         if (room.OwnerId == userId)
         {
-            return await DismissRoomAsync(userId, roomId);
+            // 查找房间内其他玩家，按 Id 升序（最早进入的在前）
+            var otherPlayers = await _roomPlayerRepository
+                .GetListAsync(rp => rp.RoomId == roomId && rp.UserId != userId);
+
+            if (otherPlayers.Any())
+            {
+                // 转移给最早进入的玩家（Id 最小）
+                var newOwner = otherPlayers.OrderBy(p => p.Id).First();
+                room.OwnerId = newOwner.UserId;
+                await _roomRepository.UpdateAsync(room);
+
+                // 删除原房主的房间玩家记录
+                await _roomPlayerRepository.DeleteAsync(roomPlayer.Id);
+
+                return (true, "房主已转移");
+            }
+            else
+            {
+                // 没有其他玩家，解散房间
+                return await DismissRoomAsync(userId, roomId);
+            }
         }
 
         // 普通玩家离开
@@ -428,6 +449,39 @@ public class RoomService : IRoomService
     }
 
     /// <summary>
+    /// 设置游戏类型（房主权限)
+    /// </summary>
+    public async Task<(bool Success, string Message)> SetGameTypeAsync(long userId, long roomId, int gameType)
+    {
+        var room = await _roomRepository.GetByIdAsync(roomId);
+        if (room == null)
+        {
+            return (false, "房间不存在");
+        }
+
+        if (room.OwnerId != userId)
+        {
+            return (false, "只有房主才能设置游戏类型");
+        }
+
+        if (room.Status != RoomStatus.Waiting)
+        {
+            return (false, "游戏进行中无法更改游戏类型");
+        }
+
+        // 验证游戏类型
+        if (gameType < 0 || gameType > 1)
+        {
+            return (false, "无效的游戏类型");
+        }
+
+        room.GameType = gameType;
+        await _roomRepository.UpdateAsync(room);
+
+        return (true, "游戏类型已更新");
+    }
+
+    /// <summary>
     /// 生成房间号
     /// </summary>
     private async Task<string> GenerateRoomCodeAsync()
@@ -463,6 +517,7 @@ public class RoomService : IRoomService
             SmallBlind = room.SmallBlind,
             BigBlind = room.BigBlind,
             Status = (int)room.Status,
+            GameType = room.GameType,
             Players = players
         };
     }

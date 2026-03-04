@@ -199,6 +199,13 @@ export const useSignalR = () => {
       })
     })
 
+    // 房主变更（房主离开，转移给其他玩家）
+    globalConnection.on('OwnerChanged', (data: { OldOwnerId: number; NewOwnerId: number; Message: string; RoomCode: string }) => {
+      console.log('[SignalR] OwnerChanged:', data)
+      roomStore.setOwner(data.NewOwnerId)
+      uni.showToast({ title: data.Message || '房主已变更', icon: 'none' })
+    })
+
     // 玩家被踢出（筹码不足）
     globalConnection.on('PlayerRemoved', (data: { UserId: number; Reason: string; Timestamp: string }) => {
       console.log('[SignalR] PlayerRemoved:', data)
